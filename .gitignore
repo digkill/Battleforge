@@ -1,6 +1,25 @@
+# Env files (секреты) — держим только *.env.example в репозитории
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Frontend (Node/Vite)
 frontend/node_modules/
 frontend/dist/
-backend/.env
-.env
+frontend/dist-ssr/
+frontend/*.tsbuildinfo
+frontend/npm-debug.log*
+
+# Backend (Go)
+backend/server
+backend/cmd/server/server
+backend/*.test
+backend/coverage.out
+
+# OS / editor
 *.log
 .DS_Store
+.idea/
+.vscode/
+*.swp
