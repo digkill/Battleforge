@@ -1,0 +1,22 @@
+name: battleforge
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      PIKABU_SECRET_KEY: ${PIKABU_SECRET_KEY:?укажите PIKABU_SECRET_KEY в .env — ключ из Студии Pikabu}
+      ADDR: :8080
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+    ports:
+      - "${FRONTEND_PORT:-5183}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
