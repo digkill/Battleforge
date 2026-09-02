@@ -52,6 +52,26 @@ var Catalog = map[string]Definition{
 		Base:   Stats{HP: 75, ATK: 24, DEF: 5, SPD: 18},
 		Growth: 0.08,
 	},
+	// Нейтральный крип: в стартовую коллекцию не выдаётся, его берут в отряд
+	// только победив в бою с нейтралами.
+	"werewolf": {
+		ID: "werewolf", Name: "Оборотень",
+		Base:   Stats{HP: 110, ATK: 23, DEF: 7, SPD: 16},
+		Growth: 0.08,
+	},
+}
+
+// CreepDefIDs — типы, которые встречаются только как нейтралы на карте.
+var CreepDefIDs = []string{"werewolf"}
+
+// IsCreep сообщает, что этот тип не выдаётся игроку на старте.
+func IsCreep(defID string) bool {
+	for _, id := range CreepDefIDs {
+		if id == defID {
+			return true
+		}
+	}
+	return false
 }
 
 // StatsAtLevel возвращает характеристики юнита на заданном уровне (1..MaxLevel).

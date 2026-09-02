@@ -239,3 +239,80 @@ func TestBattleWS_BotOpponentPlaysFullBattle(t *testing.T) {
 		}
 	}
 }
+
+// TestBattleWS_CreepBattleRecruitsWinner — смысл боя с нейтралами: победив
+// логово, игрок забирает крипа в коллекцию. Отряд игрока намеренно прокачан,
+// чтобы исход был предсказуем.
+func TestBattleWS_CreepBattleRecruitsWinner(t *testing.T) {
+	s := startTestServer(t)
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/battle/ws"
+
+	// Качаем отряд, иначе бой с равным логовом может кончиться как угодно.
+	before := s.players.GetOrCreate("hunter")
+	for _, u := range before.Units {
+		for lvl := 0; lvl < 12; lvl++ {
+			s.players.AddGold("hunter", 10000)
+			if _, err := s.players.Upgrade("hunter", u.InstanceID); err != nil {
+				break
+			}
+		}
+	}
+	before = s.players.GetOrCreate("hunter")
+	unitsBefore := len(before.Units)
+
+	hunter := dialBattleWS(t, wsURL, "hunter")
+	ch := startReader(hunter)
+	ids := make([]string, 0, len(before.Units))
+	for _, u := range before.Units {
+		ids = append(ids, u.InstanceID)
+	}
+	if err := hunter.WriteJSON(map[string]any{"type": "queue", "mode": "creep", "unitIds": ids}); err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+
+	enc := recvType(t, ch, "creep_encounter")
+	creep, _ := enc["creep"].(map[string]any)
+	if creep["defId"] != "werewolf" {
+		t.Fatalf("ожидали оборотня, получили %v", creep["defId"])
+	}
+	recvType(t, ch, "battle_start")
+
+	conns := map[string]*websocket.Conn{"hunter": hunter}
+	deadline := time.After(90 * time.Second)
+	recruited := false
+	var winner string
+	for winner == "" {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatal("соединение закрылось раньше времени")
+			}
+			if msg["type"] == "unit_recruited" {
+				recruited = true
+				continue
+			}
+			if done, w := handleMsg(t, "hunter", msg, conns); done {
+				winner = w
+			}
+		case <-deadline:
+			t.Fatal("бой с нейтралами не завершился вовремя")
+		}
+	}
+
+	if winner != "hunter" {
+		t.Skipf("логово оказалось сильнее (победил %s) — вербовку в этом прогоне не проверить", winner)
+	}
+	if !recruited {
+		t.Fatal("победа над логовом не принесла unit_recruited")
+	}
+	after := s.players.GetOrCreate("hunter")
+	if len(after.Units) != unitsBefore+1 {
+		t.Fatalf("в коллекции %d юнитов, ожидали %d", len(after.Units), unitsBefore+1)
+	}
+	last := after.Units[len(after.Units)-1]
+	if last.DefID != "werewolf" {
+		t.Fatalf("завербован %q вместо оборотня", last.DefID)
+	}
+}

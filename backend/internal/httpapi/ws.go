@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -28,6 +29,8 @@ type incoming struct {
 	UnitIDs  []string    `json:"unitIds,omitempty"`
 	TargetID string      `json:"targetId,omitempty"`
 	MoveTo   *battle.Hex `json:"moveTo,omitempty"`
+	// Mode: "creep" — бой с нейтралами вместо поиска живого соперника.
+	Mode string `json:"mode,omitempty"`
 }
 
 // room сводит двух заматченных игроков вокруг общего battle.Battle. Пишут в
@@ -100,10 +103,10 @@ func (s *Server) attachToRoom(rm *room, b *battle.Battle, playerID string, conn 
 // соперника соединения нет, поэтому бой с ботом стартует по первому же.
 func (rm *room) needAttached() int {
 	n := 2
-	if battle.IsBot(rm.playerA) {
+	if battle.IsServerControlled(rm.playerA) {
 		n--
 	}
-	if battle.IsBot(rm.playerB) {
+	if battle.IsServerControlled(rm.playerB) {
 		n--
 	}
 	return n
@@ -209,7 +212,7 @@ func (rm *room) run(onFinish func(winner string)) {
 
 		// За бота ходит сервер: ждать действия по сокету, которого нет, значило бы
 		// повесить бой навсегда.
-		if battle.IsBot(owner) {
+		if battle.IsServerControlled(owner) {
 			moveTo, targetID, ok := rm.b.BotChooseAction(actorID)
 			if !ok {
 				break
@@ -231,8 +234,10 @@ func (rm *room) run(onFinish func(winner string)) {
 		select {
 		case loser := <-rm.disconnect:
 			winner := rm.opponentOf(loser)
-			rm.broadcast(map[string]any{"type": "battle_end", "winner": winner, "reason": "opponent_disconnected"})
+			// Награда начисляется и отправляется до battle_end: клиент на нём
+			// закрывает сокет, и всё, что придёт следом, до игрока не дойдёт.
 			onFinish(winner)
+			rm.broadcast(map[string]any{"type": "battle_end", "winner": winner, "reason": "opponent_disconnected"})
 			return
 
 		case action := <-rm.actions:
@@ -258,8 +263,8 @@ func (rm *room) run(onFinish func(winner string)) {
 	if winnerSide != nil && *winnerSide == battle.SideB {
 		winner = rm.playerB
 	}
-	rm.broadcast(map[string]any{"type": "battle_end", "winner": winner})
 	onFinish(winner)
+	rm.broadcast(map[string]any{"type": "battle_end", "winner": winner})
 }
 
 const battleWinReward = 100
@@ -304,6 +309,12 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	squad, err := resolveSquad(p, msg.UnitIDs)
 	if err != nil {
 		_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
+		return
+	}
+
+	// Бой с нейтралами не ждёт никого: логово собирается тут же под силу отряда.
+	if msg.Mode == "creep" {
+		s.runCreepBattle(conn, playerID, squad)
 		return
 	}
 
@@ -367,8 +378,9 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	isLast := s.attachToRoom(rm, match.Battle, playerID, conn)
 	if isLast {
 		go rm.run(func(winner string) {
-			// За бота золото начислять некому: AddGold завёл бы фантомного игрока.
-			if battle.IsBot(winner) {
+			// Серверной стороне золото начислять некому: AddGold завёл бы
+			// фантомного игрока.
+			if battle.IsServerControlled(winner) {
 				return
 			}
 			s.players.AddGold(winner, battleWinReward)
@@ -437,4 +449,74 @@ func resolveSquad(p *player.Player, unitIDs []string) ([]units.Instance, error) 
 		squad = append(squad, u)
 	}
 	return squad, nil
+}
+
+// runCreepBattle проводит бой против нейтрального логова. Победа приносит не
+// золото, а самого крипа в коллекцию — ради этого бой и затевается.
+func (s *Server) runCreepBattle(conn *websocket.Conn, playerID string, squad []units.Instance) {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	defID := battle.RandomCreepDefID(r)
+	stack, creepSquad, err := battle.NewCreepStack(defID, squad, r)
+	if err != nil {
+		_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
+		return
+	}
+
+	b, err := battle.New(squad, creepSquad)
+	if err != nil {
+		_ = conn.WriteJSON(map[string]any{"type": "error", "message": err.Error()})
+		return
+	}
+
+	rm := newRoom(b, playerID, battle.CreepPlayerID)
+	rm.connA = conn
+	close(rm.ready)
+
+	_ = conn.WriteJSON(map[string]any{"type": "creep_encounter", "creep": stack})
+
+	done := make(chan struct{})
+	defer close(done)
+	msgs, closed := readPump(conn, done)
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		rm.run(func(winner string) {
+			if winner != playerID {
+				return
+			}
+			// Награда — побеждённый крип того же уровня, что и логово.
+			p, inst, err := s.players.Recruit(playerID, stack.DefID, stack.Level)
+			if err != nil {
+				log.Printf("battle ws: recruit failed: %v", err)
+				return
+			}
+			rm.send(conn, map[string]any{
+				"type":       "unit_recruited",
+				"unit":       inst,
+				"unitName":   stack.Name,
+				"gold":       p.Gold,
+				"collection": p.Units,
+			})
+		})
+	}()
+
+	for {
+		select {
+		case <-finished:
+			return
+		case <-closed:
+			rm.reportDisconnect(playerID)
+			return
+		case m := <-msgs:
+			if m.Type != "action" {
+				continue
+			}
+			select {
+			case rm.actions <- playerAction{playerID: playerID, targetID: m.TargetID, moveTo: m.MoveTo}:
+			case <-finished:
+				return
+			}
+		}
+	}
 }

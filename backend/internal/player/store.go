@@ -114,6 +114,32 @@ func (s *Store) AddGold(playerID string, amount int) *Player {
 	return p.clone()
 }
 
+// Recruit добавляет игроку юнита указанного типа — например побеждённого крипа.
+// Возвращает обновлённого игрока и добавленный юнит.
+func (s *Store) Recruit(playerID, defID string, level int) (*Player, units.Instance, error) {
+	if _, ok := units.Catalog[defID]; !ok {
+		return nil, units.Instance{}, ErrUnitNotFound
+	}
+	if level < 1 {
+		level = 1
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := s.getOrCreateLocked(playerID)
+	// nextUID общий на весь стор: instanceID обязан быть уникальным не только
+	// внутри коллекции, но и между игроками — иначе в бою два юнита схлопнутся.
+	s.nextUID++
+	inst := units.Instance{
+		InstanceID: fmt.Sprintf("u%d", s.nextUID),
+		DefID:      defID,
+		Level:      level,
+	}
+	p.Units = append(p.Units, inst)
+	return p.clone(), inst, nil
+}
+
 func (p *Player) clone() *Player {
 	unitsCopy := make([]units.Instance, len(p.Units))
 	copy(unitsCopy, p.Units)
