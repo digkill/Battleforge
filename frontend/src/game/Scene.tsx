@@ -2,7 +2,14 @@ import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Suspense, useMemo, useRef } from 'react'
 import type { Group } from 'three'
-import type { BattleFighter } from './use-battle-socket'
+import type {
+  AttackOption,
+  BattleField,
+  BattleFighter,
+  Hex,
+  ReachableHex,
+  Terrain,
+} from './use-battle-socket'
 
 // Модели лежат в public/models/<defId>/model.gltf — путь совпадает с ключом
 // каталога юнитов на бэкенде, поэтому новый юнит требует только новой папки.
@@ -10,120 +17,230 @@ const MODEL_PATH = (defId: string) => `/models/${defId}/model.gltf`
 
 const KNOWN_MODELS = ['warrior', 'mage', 'archer', 'healer', 'knight', 'assassin']
 
-/** Ряд юнитов: своя сторона ближе к камере, чужая — дальше и развёрнута к нам. */
-const ROW_Z = { mine: 1.6, theirs: -1.6 }
+const HEX_SIZE = 0.62
 
-function UnitModel({
-  defId,
-  position,
-  facing,
-  alive,
-  active,
+/**
+ * Перевод offset-координат «odd-r» в координаты сцены.
+ *
+ * Ряды сдвинуты вправо на нечётных строках — тот же сдвиг, что и в расчётах
+ * соседства на сервере, иначе клетки на экране разъедутся с логикой боя.
+ */
+function hexToWorld({ col, row }: Hex): [number, number] {
+  const x = HEX_SIZE * Math.sqrt(3) * (col + 0.5 * (row & 1))
+  const z = HEX_SIZE * 1.5 * row
+  return [x, z]
+}
+
+const TERRAIN_STYLE: Record<Terrain, { color: string; height: number; rough: number }> = {
+  plain: { color: '#4a5d3a', height: 0.12, rough: 0.95 },
+  forest: { color: '#26401f', height: 0.34, rough: 1 },
+  mountain: { color: '#6b6157', height: 0.72, rough: 0.85 },
+  water: { color: '#1d3d5c', height: 0.06, rough: 0.25 },
+}
+
+function hexKey(h: Hex) {
+  return `${h.col}:${h.row}`
+}
+
+function Tile({
+  hex,
+  terrain,
+  reachable,
+  onPick,
 }: {
-  defId: string
-  position: [number, number, number]
-  facing: number
-  alive: boolean
-  active: boolean
+  hex: Hex
+  terrain: Terrain
+  reachable: boolean
+  onPick: (h: Hex) => void
 }) {
-  const group = useRef<Group>(null)
-  const { scene } = useGLTF(MODEL_PATH(defId))
-
-  // Каждый юнит на арене — независимый объект, а useGLTF отдаёт один и тот же
-  // кэшированный граф на все вызовы с этим путём. Без копии два бойца одного
-  // типа делили бы один трансформ и стояли бы друг в друге.
-  const model = useMemo(() => scene.clone(true), [scene])
-
-  useFrame((state, delta) => {
-    const g = group.current
-    if (!g) return
-    // Павшие заваливаются набок, живые стоят прямо.
-    const targetTilt = alive ? 0 : -Math.PI / 2
-    g.rotation.x += (targetTilt - g.rotation.x) * Math.min(1, delta * 6)
-    // Чей ход — тот покачивается, чтобы его было видно без подписи.
-    const bob = active && alive ? Math.sin(state.clock.elapsedTime * 3) * 0.06 : 0
-    g.position.y = position[1] + bob
-  })
+  const style = TERRAIN_STYLE[terrain]
+  const [x, z] = hexToWorld(hex)
 
   return (
-    <group ref={group} position={position} rotation={[0, facing, 0]}>
-      <primitive object={model} scale={0.9} />
-      {active && alive && (
-        <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.42, 0.55, 32]} />
-          <meshBasicMaterial color="#c084fc" transparent opacity={0.85} />
+    <group position={[x, 0, z]}>
+      <mesh
+        position={[0, style.height / 2, 0]}
+        onClick={(e) => {
+          if (!reachable) return
+          e.stopPropagation()
+          onPick(hex)
+        }}
+      >
+        {/* cylinderGeometry с шестью сегментами — это и есть гекс. Поворот на
+            30° делает вершину направленной вверх, как требует раскладка odd-r. */}
+        <cylinderGeometry args={[HEX_SIZE, HEX_SIZE, style.height, 6]} />
+        <meshStandardMaterial
+          color={style.color}
+          roughness={style.rough}
+          metalness={terrain === 'water' ? 0.35 : 0}
+        />
+      </mesh>
+
+      {reachable && (
+        <mesh position={[0, style.height + 0.015, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <circleGeometry args={[HEX_SIZE * 0.62, 6]} />
+          <meshBasicMaterial color="#e8c66a" transparent opacity={0.42} />
         </mesh>
       )}
     </group>
   )
 }
 
-function Arena({
-  mine,
-  theirs,
-  activeUnitId,
+function Field({
+  field,
+  reachable,
+  onPick,
 }: {
-  mine: BattleFighter[]
-  theirs: BattleFighter[]
-  activeUnitId: string | null
+  field: BattleField
+  reachable: ReachableHex[]
+  onPick: (h: Hex) => void
 }) {
-  const rows: Array<{ units: BattleFighter[]; z: number; facing: number }> = [
-    { units: mine, z: ROW_Z.mine, facing: 0 },
-    { units: theirs, z: ROW_Z.theirs, facing: Math.PI },
-  ]
+  const reachableKeys = useMemo(
+    () => new Set(reachable.map((h) => hexKey(h))),
+    [reachable],
+  )
+
+  const tiles: React.ReactElement[] = []
+  for (let row = 0; row < field.height; row++) {
+    for (let col = 0; col < field.width; col++) {
+      const hex = { col, row }
+      tiles.push(
+        <Tile
+          key={hexKey(hex)}
+          hex={hex}
+          terrain={field.rows[row][col]}
+          reachable={reachableKeys.has(hexKey(hex))}
+          onPick={onPick}
+        />,
+      )
+    }
+  }
+  return <>{tiles}</>
+}
+
+function UnitModel({
+  unit,
+  active,
+  attackable,
+  onPick,
+}: {
+  unit: BattleFighter
+  active: boolean
+  attackable: boolean
+  onPick: (targetId: string) => void
+}) {
+  const group = useRef<Group>(null)
+  const { scene } = useGLTF(MODEL_PATH(unit.defId))
+
+  // Каждый юнит на поле — независимый объект, а useGLTF отдаёт один и тот же
+  // кэшированный граф на все вызовы с этим путём. Без копии два бойца одного
+  // типа делили бы один трансформ и стояли бы друг в друге.
+  const model = useMemo(() => scene.clone(true), [scene])
+
+  const alive = unit.currentHp > 0
+  const [x, z] = hexToWorld(unit.pos)
+  // Сторона B развёрнута навстречу — иначе оба отряда смотрели бы в одну сторону.
+  const facing = unit.side === 0 ? Math.PI / 2 : -Math.PI / 2
+
+  useFrame((state, delta) => {
+    const g = group.current
+    if (!g) return
+    // Плавный переезд на новую клетку: сервер присылает конечную позицию, а
+    // рывок между гексами читался бы как телепорт.
+    g.position.x += (x - g.position.x) * Math.min(1, delta * 6)
+    g.position.z += (z - g.position.z) * Math.min(1, delta * 6)
+
+    const targetTilt = alive ? 0 : -Math.PI / 2
+    g.rotation.x += (targetTilt - g.rotation.x) * Math.min(1, delta * 6)
+
+    const bob = active && alive ? Math.sin(state.clock.elapsedTime * 3) * 0.05 : 0
+    g.position.y = 0.14 + bob
+  })
 
   return (
-    <>
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[3, 6, 4]} intensity={1.6} castShadow />
-      <Environment preset="sunset" />
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow>
-        <circleGeometry args={[4.5, 48]} />
-        <meshStandardMaterial color="#1c1626" roughness={0.9} />
-      </mesh>
-
-      {rows.map(({ units, z, facing }) =>
-        units.map((unit, i) => (
-          <UnitModel
-            key={unit.instanceId}
-            defId={unit.defId}
-            // Отряд центрируется независимо от размера: 1 юнит стоит по центру,
-            // 3 — веером, и павшие не оставляют дыр в строю.
-            position={[(i - (units.length - 1) / 2) * 1.5, 0, z]}
-            facing={facing}
-            alive={unit.currentHp > 0}
-            active={unit.instanceId === activeUnitId}
-          />
-        )),
+    <group ref={group} position={[x, 0.14, z]} rotation={[0, facing, 0]}>
+      <primitive
+        object={model}
+        scale={0.5}
+        onClick={(e: { stopPropagation: () => void }) => {
+          if (!attackable) return
+          e.stopPropagation()
+          onPick(unit.instanceId)
+        }}
+      />
+      {active && alive && (
+        <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[0.3, 0.4, 24]} />
+          <meshBasicMaterial color="#e8c66a" transparent opacity={0.9} />
+        </mesh>
       )}
-    </>
+      {attackable && alive && (
+        <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[0.42, 0.52, 24]} />
+          <meshBasicMaterial color="#d24b3a" transparent opacity={0.9} />
+        </mesh>
+      )}
+    </group>
   )
 }
 
 export function BattleScene({
-  mine,
-  theirs,
+  field,
+  units,
   activeUnitId,
+  reachable,
+  attackable,
+  onMove,
+  onAttack,
 }: {
-  mine: BattleFighter[]
-  theirs: BattleFighter[]
+  field: BattleField | null
+  units: BattleFighter[]
   activeUnitId: string | null
+  reachable: ReachableHex[]
+  attackable: AttackOption[]
+  onMove: (h: Hex) => void
+  onAttack: (opt: AttackOption) => void
 }) {
+  const attackableById = useMemo(
+    () => new Map(attackable.map((o) => [o.targetId, o])),
+    [attackable],
+  )
+
+  // Камера смотрит вдоль поля с той стороны, где стоит игрок.
+  const center = field
+    ? hexToWorld({ col: Math.floor(field.width / 2), row: Math.floor(field.height / 2) })
+    : [0, 0]
+
   return (
-    <div className="h-64 w-full overflow-hidden rounded-lg border bg-[#120e18] sm:h-80">
-      <Canvas shadows camera={{ position: [0, 3.2, 5.4], fov: 45 }}>
-        {/* Пока модели грузятся, арена просто пустая — падать в фолбэк на
-            каждый кадр загрузки было бы заметнее, чем короткая пауза. */}
+    <div className="h-80 w-full overflow-hidden rounded-lg border border-primary/25 bg-[#120e18] sm:h-[26rem]">
+      <Canvas shadows camera={{ position: [center[0], 9, center[1] + 9], fov: 45 }}>
         <Suspense fallback={null}>
-          <Arena mine={mine} theirs={theirs} activeUnitId={activeUnitId} />
+          <ambientLight intensity={0.75} />
+          <directionalLight position={[6, 12, 6]} intensity={1.5} castShadow />
+          <Environment preset="sunset" />
+
+          {field && <Field field={field} reachable={reachable} onPick={onMove} />}
+
+          {units.map((unit) => (
+            <UnitModel
+              key={unit.instanceId}
+              unit={unit}
+              active={unit.instanceId === activeUnitId}
+              attackable={attackableById.has(unit.instanceId)}
+              onPick={(id) => {
+                const opt = attackableById.get(id)
+                if (opt) onAttack(opt)
+              }}
+            />
+          ))}
         </Suspense>
         <OrbitControls
+          target={[center[0], 0, center[1]]}
           enablePan={false}
-          minPolarAngle={Math.PI / 6}
-          maxPolarAngle={Math.PI / 2.2}
-          minDistance={3.5}
-          maxDistance={9}
+          minPolarAngle={Math.PI / 8}
+          maxPolarAngle={Math.PI / 2.3}
+          minDistance={6}
+          maxDistance={22}
         />
       </Canvas>
     </div>
@@ -168,5 +285,5 @@ export function UnitPreview({ defId }: { defId: string }) {
 }
 
 // Модели тянутся заранее: бой начинается сразу после матчмейкинга, и ждать
-// загрузку уже во время первого хода — значит показать пустую арену.
+// загрузку уже во время первого хода — значит показать пустое поле.
 KNOWN_MODELS.forEach((defId) => useGLTF.preload(MODEL_PATH(defId)))

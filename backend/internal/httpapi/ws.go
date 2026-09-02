@@ -24,9 +24,10 @@ var upgrader = websocket.Upgrader{
 
 // incoming — сообщения от клиента через WebSocket.
 type incoming struct {
-	Type     string   `json:"type"`
-	UnitIDs  []string `json:"unitIds,omitempty"`
-	TargetID string   `json:"targetId,omitempty"`
+	Type     string      `json:"type"`
+	UnitIDs  []string    `json:"unitIds,omitempty"`
+	TargetID string      `json:"targetId,omitempty"`
+	MoveTo   *battle.Hex `json:"moveTo,omitempty"`
 }
 
 // room сводит двух заматченных игроков вокруг общего battle.Battle. Пишут в
@@ -52,6 +53,7 @@ type room struct {
 type playerAction struct {
 	playerID string
 	targetID string
+	moveTo   *battle.Hex
 }
 
 func newRoom(b *battle.Battle, playerA, playerB string) *room {
@@ -153,6 +155,7 @@ func (rm *room) run(onFinish func(winner string)) {
 	rm.broadcast(map[string]any{
 		"type":    "battle_start",
 		"units":   rm.b.Snapshot(),
+		"field":   rm.b.Map,
 		"playerA": rm.playerA,
 		"playerB": rm.playerB,
 	})
@@ -165,10 +168,39 @@ func (rm *room) run(onFinish func(winner string)) {
 		owner := rm.unitOwner[actorID]
 		targets := rm.b.AliveTargets(actorID)
 
+		// Клетки отдаём списком, а не картой: ключ-структуру JSON не переварит.
+		reach := rm.b.ReachableFor(actorID)
+		hexes := make([]map[string]int, 0, len(reach))
+		for h, cost := range reach {
+			hexes = append(hexes, map[string]int{"col": h.Col, "row": h.Row, "cost": cost})
+		}
+
+		plan := rm.b.AttackPlan(actorID)
+
+		// Юнита могло запереть местностью и телами: ходить некуда, достать
+		// некого. Ждать от игрока действия, которого он не может совершить,
+		// значило бы повесить бой — такой ход пропускаем сами.
+		if len(hexes) == 0 && len(plan) == 0 {
+			if err := rm.b.SkipTurn(actorID); err != nil {
+				log.Printf("battle ws: skip turn failed: %v", err)
+				break
+			}
+			rm.broadcast(map[string]any{
+				"type":   "turn_skipped",
+				"unitId": actorID,
+				"units":  rm.b.Snapshot(),
+			})
+			continue
+		}
+
 		rm.send(rm.connFor(owner), map[string]any{
-			"type":         "your_turn",
-			"unitId":       actorID,
+			"type":   "your_turn",
+			"unitId": actorID,
+			// validTargets оставлен для обратной совместимости: это все живые
+			// враги, а не только те, до кого реально дотянуться в этот ход.
 			"validTargets": targets,
+			"reachable":    hexes,
+			"attackable":   plan,
 		})
 		rm.send(rm.connFor(rm.opponentOf(owner)), map[string]any{
 			"type":   "opponent_turn",
@@ -178,12 +210,12 @@ func (rm *room) run(onFinish func(winner string)) {
 		// За бота ходит сервер: ждать действия по сокету, которого нет, значило бы
 		// повесить бой навсегда.
 		if battle.IsBot(owner) {
-			targetID, ok := rm.b.BotChooseTarget(actorID)
+			moveTo, targetID, ok := rm.b.BotChooseAction(actorID)
 			if !ok {
 				break
 			}
 			time.Sleep(botThinkTime)
-			entry, err := rm.b.Act(actorID, targetID)
+			entry, err := rm.b.Act(actorID, moveTo, targetID)
 			if err != nil {
 				log.Printf("battle ws: bot move failed: %v", err)
 				break
@@ -208,7 +240,7 @@ func (rm *room) run(onFinish func(winner string)) {
 				rm.send(rm.connFor(action.playerID), map[string]any{"type": "error", "message": "сейчас не ваш ход"})
 				continue
 			}
-			entry, err := rm.b.Act(actorID, action.targetID)
+			entry, err := rm.b.Act(actorID, action.moveTo, action.targetID)
 			if err != nil {
 				rm.send(rm.connFor(action.playerID), map[string]any{"type": "error", "message": err.Error()})
 				continue
@@ -357,7 +389,7 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			select {
-			case rm.actions <- playerAction{playerID: playerID, targetID: m.TargetID}:
+			case rm.actions <- playerAction{playerID: playerID, targetID: m.TargetID, moveTo: m.MoveTo}:
 			case <-rm.disconnect:
 				return
 			}

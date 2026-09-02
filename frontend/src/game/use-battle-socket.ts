@@ -3,6 +3,22 @@ import { battleWsUrl } from './api'
 
 export type BattleStats = { hp: number; atk: number; def: number; spd: number }
 
+export type Hex = { col: number; row: number }
+
+export type Terrain = 'plain' | 'forest' | 'mountain' | 'water'
+
+export type BattleField = {
+  width: number
+  height: number
+  rows: Terrain[][]
+}
+
+/** Клетка, куда юнит может дойти, и цена пути до неё. */
+export type ReachableHex = Hex & { cost: number }
+
+/** Цель и самая дешёвая клетка, с которой до неё достаёт — считает сервер. */
+export type AttackOption = { targetId: string; from: Hex; cost: number }
+
 export type BattleFighter = {
   instanceId: string
   /** Тип юнита из каталога — по нему выбирается 3D-модель (name локализован). */
@@ -11,6 +27,9 @@ export type BattleFighter = {
   side: 0 | 1
   stats: BattleStats
   currentHp: number
+  pos: Hex
+  moves: number
+  range: number
 }
 
 export type BattleLogEntry = {
@@ -18,6 +37,8 @@ export type BattleLogEntry = {
   targetId: string
   damage: number
   targetKo: boolean
+  /** Заполнено, если юнит сместился — в том числе когда удара не было. */
+  movedTo?: Hex
 }
 
 type BattlePhase = 'idle' | 'queued' | 'in_progress' | 'finished'
@@ -27,6 +48,9 @@ export type BattleState = {
   playerA: string | null
   playerB: string | null
   units: BattleFighter[]
+  field: BattleField | null
+  reachable: ReachableHex[]
+  attackable: AttackOption[]
   log: BattleLogEntry[]
   yourTurnUnitId: string | null
   /** Чей ход у соперника — нужен арене, чтобы подсветить активного юнита и на той стороне. */
@@ -42,6 +66,9 @@ const initialState: BattleState = {
   playerA: null,
   playerB: null,
   units: [],
+  field: null,
+  reachable: [],
+  attackable: [],
   log: [],
   yourTurnUnitId: null,
   opponentUnitId: null,
@@ -85,6 +112,7 @@ export function useBattleSocket(playerId: string) {
               playerA: msg.playerA,
               playerB: msg.playerB,
               units: msg.units,
+              field: msg.field,
             }))
             break
           case 'your_turn':
@@ -93,6 +121,8 @@ export function useBattleSocket(playerId: string) {
               yourTurnUnitId: msg.unitId,
               opponentUnitId: null,
               validTargets: msg.validTargets,
+              reachable: msg.reachable ?? [],
+              attackable: msg.attackable ?? [],
             }))
             break
           case 'opponent_turn':
@@ -101,6 +131,8 @@ export function useBattleSocket(playerId: string) {
               yourTurnUnitId: null,
               opponentUnitId: msg.unitId,
               validTargets: [],
+              reachable: [],
+              attackable: [],
             }))
             break
           case 'battle_update':
@@ -108,6 +140,19 @@ export function useBattleSocket(playerId: string) {
               ...s,
               units: msg.units,
               log: [...s.log, msg.log as BattleLogEntry],
+              reachable: [],
+              attackable: [],
+            }))
+            break
+          // Юнита заперло местностью и телами — сервер пропустил его ход сам.
+          case 'turn_skipped':
+            setState((s) => ({
+              ...s,
+              units: msg.units,
+              yourTurnUnitId: null,
+              opponentUnitId: null,
+              reachable: [],
+              attackable: [],
             }))
             break
           case 'battle_end':
@@ -119,6 +164,8 @@ export function useBattleSocket(playerId: string) {
               yourTurnUnitId: null,
               opponentUnitId: null,
               validTargets: [],
+              reachable: [],
+              attackable: [],
             }))
             ws.close()
             break
@@ -135,8 +182,9 @@ export function useBattleSocket(playerId: string) {
     [playerId],
   )
 
-  const act = useCallback((targetId: string) => {
-    wsRef.current?.send(JSON.stringify({ type: 'action', targetId }))
+  /** Ход: пройти в moveTo и/или ударить targetId. Можно только идти или только бить. */
+  const act = useCallback((opts: { targetId?: string; moveTo?: Hex }) => {
+    wsRef.current?.send(JSON.stringify({ type: 'action', ...opts }))
   }, [])
 
   const reset = useCallback(() => {

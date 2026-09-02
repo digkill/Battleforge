@@ -129,14 +129,26 @@ func handleMsg(t *testing.T, player string, msg map[string]any, conns map[string
 	t.Helper()
 	switch msg["type"] {
 	case "your_turn":
-		rawTargets, _ := msg["validTargets"].([]any)
-		if len(rawTargets) == 0 {
-			t.Fatalf("%s: your_turn with no valid targets", player)
+		// Поле гексагональное: бить можно только то, до чего дотянешься, поэтому
+		// действие берём из attackable (сервер уже посчитал, откуда достанем).
+		// Если достать некого — просто идём в сторону врага любой доступной клеткой.
+		action := map[string]any{"type": "action"}
+		attackable, _ := msg["attackable"].([]any)
+		if len(attackable) > 0 {
+			opt := attackable[0].(map[string]any)
+			action["targetId"] = opt["targetId"]
+			action["moveTo"] = opt["from"]
+		} else {
+			reachable, _ := msg["reachable"].([]any)
+			if len(reachable) == 0 {
+				t.Fatalf("%s: ход без единого варианта — сервер должен был пропустить его сам", player)
+			}
+			hex := reachable[len(reachable)-1].(map[string]any)
+			action["moveTo"] = map[string]any{"col": hex["col"], "row": hex["row"]}
 		}
-		target := rawTargets[0].(string)
 		conn := conns[player]
 		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := conn.WriteJSON(map[string]any{"type": "action", "targetId": target}); err != nil {
+		if err := conn.WriteJSON(action); err != nil {
 			t.Fatalf("%s: failed to send action: %v", player, err)
 		}
 		return false, ""

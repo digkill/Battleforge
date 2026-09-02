@@ -47,7 +47,7 @@ func TestAct_WrongActorRejected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// первый ход — assassin, а не knight
-	_, err = b.Act("knight", "assassin")
+	_, err = b.Act("knight", nil, "assassin")
 	if err != ErrNotUnitsTurn {
 		t.Fatalf("expected ErrNotUnitsTurn, got %v", err)
 	}
@@ -60,7 +60,7 @@ func TestAct_InvalidTargetRejected(t *testing.T) {
 	}
 	current, _ := b.CurrentTurn()
 	// цель на своей же стороне — недопустимо
-	_, err = b.Act(current, current)
+	_, err = b.Act(current, nil, current)
 	if err != ErrInvalidTarget {
 		t.Fatalf("expected ErrInvalidTarget, got %v", err)
 	}
@@ -76,7 +76,11 @@ func TestAct_DamageAppliedAndMinimumOne(t *testing.T) {
 	if current != "warrior" {
 		t.Fatalf("expected warrior to go first, got %q", current)
 	}
-	entry, err := b.Act("warrior", "knight")
+	// Отряды стартуют по разным краям поля, а warrior — рукопашник с дальностью 1.
+	// Ставим бойцов вплотную, чтобы проверять именно формулу урона, а не ходьбу.
+	b.fighters["warrior"].Pos = Hex{Col: 5, Row: 4}
+	b.fighters["knight"].Pos = Hex{Col: 6, Row: 4}
+	entry, err := b.Act("warrior", nil, "knight")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,11 +109,11 @@ func TestBattle_ResolvesToWinnerDeterministically(t *testing.T) {
 		if !ok {
 			t.Fatal("no current turn but battle not over")
 		}
-		targets := b.AliveTargets(actorID)
-		if len(targets) == 0 {
-			t.Fatal("actor has no targets but battle not over")
+		moveTo, targetID, ok := b.BotChooseAction(actorID)
+		if !ok {
+			t.Fatal("actor has no available action but battle not over")
 		}
-		if _, err := b.Act(actorID, targets[0]); err != nil {
+		if _, err := b.Act(actorID, moveTo, targetID); err != nil {
 			t.Fatalf("unexpected error acting: %v", err)
 		}
 	}
@@ -118,13 +122,44 @@ func TestBattle_ResolvesToWinnerDeterministically(t *testing.T) {
 	if winner == nil {
 		t.Fatal("expected a winner")
 	}
-	if *winner != SideA {
-		t.Fatalf("expected warrior (higher ATK, SideA) to win, got side %v", *winner)
-	}
+	// Кто именно победит, теперь зависит от местности и дистанции: маг с
+	// дальностью 4 расстреливает рукопашника, пока тот идёт через поле.
+	// Тест следит за тем, что бой сходится, а не за конкретной стороной.
 
 	// после победы дальнейшие ходы запрещены
-	if _, err := b.Act("warrior", "mage"); err != ErrBattleOver {
+	if _, err := b.Act("warrior", nil, "mage"); err != ErrBattleOver {
 		t.Fatalf("expected ErrBattleOver after battle ended, got %v", err)
+	}
+}
+
+// TestAttackRange_RangedStrikesFromAfarMeleeMustCloseIn — суть перехода на поле:
+// дальность решает, кто может ударить, не сходя с места. Стрелок бьёт через
+// три клетки, рукопашник с той же дистанции обязан сначала подойти.
+func TestAttackRange_RangedStrikesFromAfarMeleeMustCloseIn(t *testing.T) {
+	b, err := New(squad(t, "archer"), squad(t, "knight"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b.fighters["archer"].Pos = Hex{Col: 3, Row: 4}
+	b.fighters["knight"].Pos = Hex{Col: 6, Row: 4}
+	if d := Distance(Hex{Col: 3, Row: 4}, Hex{Col: 6, Row: 4}); d != 3 {
+		t.Fatalf("подготовка теста неверна: ожидали дистанцию 3, получили %d", d)
+	}
+
+	current, _ := b.CurrentTurn() // archer быстрее (SPD 14 против 6)
+	if current != "archer" {
+		t.Fatalf("ожидали ход стрелка, получили %q", current)
+	}
+	if _, err := b.Act("archer", nil, "knight"); err != nil {
+		t.Fatalf("стрелок (дальность 4) должен доставать через 3 клетки: %v", err)
+	}
+
+	current, _ = b.CurrentTurn()
+	if current != "knight" {
+		t.Fatalf("ожидали ход рыцаря, получили %q", current)
+	}
+	if _, err := b.Act("knight", nil, "archer"); err != ErrOutOfRange {
+		t.Fatalf("рукопашник не должен бить через 3 клетки, получено: %v", err)
 	}
 }
 
@@ -155,11 +190,11 @@ func TestBattle_3v3ResolvesWithoutStallingOnDeadUnit(t *testing.T) {
 		if f, _ := b.Fighter(actorID); !f.Alive() {
 			t.Fatalf("CurrentTurn вернул мёртвого юнита %q (HP=%d)", actorID, f.CurrentHP)
 		}
-		targets := b.AliveTargets(actorID)
-		if len(targets) == 0 {
-			t.Fatalf("у %q нет целей, но бой не окончен", actorID)
+		moveTo, targetID, ok := b.BotChooseAction(actorID)
+		if !ok {
+			t.Fatalf("у %q нет доступного действия, но бой не окончен", actorID)
 		}
-		if _, err := b.Act(actorID, targets[0]); err != nil {
+		if _, err := b.Act(actorID, moveTo, targetID); err != nil {
 			t.Fatalf("Act(%q) вернул ошибку: %v", actorID, err)
 		}
 	}

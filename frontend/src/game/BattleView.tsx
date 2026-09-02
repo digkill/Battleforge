@@ -88,12 +88,16 @@ export function BattleView({ playerId, player }: { playerId: string; player: Pla
   return (
     <div className="flex flex-col gap-4">
       <Suspense
-        fallback={<div className="h-64 w-full rounded-lg border bg-[#120e18] sm:h-80" />}
+        fallback={<div className="h-80 w-full rounded-lg border bg-[#120e18] sm:h-[26rem]" />}
       >
         <BattleScene
-          mine={mine}
-          theirs={theirs}
+          field={state.field}
+          units={state.units}
           activeUnitId={state.yourTurnUnitId ?? state.opponentUnitId}
+          reachable={state.reachable}
+          attackable={state.attackable}
+          onMove={(hex) => act({ moveTo: hex })}
+          onAttack={(opt) => act({ targetId: opt.targetId, moveTo: opt.from })}
         />
       </Suspense>
 
@@ -106,15 +110,28 @@ export function BattleView({ playerId, player }: { playerId: string; player: Pla
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              Ход юнита: {unitLabel(state.units, state.yourTurnUnitId)} — выберите цель
+              Ход юнита: {unitLabel(state.units, state.yourTurnUnitId)}
             </CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {state.validTargets.map((targetId) => (
-              <Button key={targetId} type="button" variant="secondary" onClick={() => act(targetId)}>
-                {unitLabel(state.units, targetId)}
-              </Button>
-            ))}
+          <CardContent className="flex flex-col gap-2">
+            <p className="text-sm text-muted-foreground">
+              {state.attackable.length > 0
+                ? 'Кликните подсвеченного красным врага, чтобы атаковать, или золотую клетку, чтобы перейти.'
+                : 'Достать некого — кликните золотую клетку, чтобы подойти ближе.'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {state.attackable.map((opt) => (
+                <Button
+                  key={opt.targetId}
+                  type="button"
+                  variant="secondary"
+                  onClick={() => act({ targetId: opt.targetId, moveTo: opt.from })}
+                >
+                  Атаковать: {unitLabel(state.units, opt.targetId)}
+                  {opt.cost > 0 && ` (подойти на ${opt.cost})`}
+                </Button>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -126,8 +143,18 @@ export function BattleView({ playerId, player }: { playerId: string; player: Pla
         <CardContent className="flex max-h-40 flex-col-reverse gap-1 overflow-y-auto text-sm text-muted-foreground">
           {[...state.log].reverse().map((entry, i) => (
             <p key={i}>
-              {unitLabel(state.units, entry.attackerId)} → {unitLabel(state.units, entry.targetId)}:{' '}
-              {entry.damage} урона{entry.targetKo ? ' (повержен)' : ''}
+              {entry.targetId ? (
+                <>
+                  {unitLabel(state.units, entry.attackerId)} →{' '}
+                  {unitLabel(state.units, entry.targetId)}: {entry.damage} урона
+                  {entry.targetKo ? ' (повержен)' : ''}
+                </>
+              ) : (
+                <>
+                  {unitLabel(state.units, entry.attackerId)} перешёл на клетку{' '}
+                  {entry.movedTo ? `${entry.movedTo.col}:${entry.movedTo.row}` : '—'}
+                </>
+              )}
             </p>
           ))}
         </CardContent>
