@@ -1,9 +1,13 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { upgradeUnit, type PlayerState } from './api'
 import { CATALOG, MAX_LEVEL, statsAtLevel, upgradeCost } from './catalog'
+
+// Тот же ленивый чанк, что и у арены боя: three.js подтягивается один раз на
+// обе вкладки и не попадает в основной бандл.
+const UnitPreview = lazy(() => import('./Scene').then((m) => ({ default: m.UnitPreview })))
 
 export function CollectionView({
   playerId,
@@ -54,6 +58,9 @@ export function CollectionView({
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
+                <Suspense fallback={<div className="h-44 w-full rounded-md bg-[#120e18]" />}>
+                  <UnitPreview defId={unit.defId} />
+                </Suspense>
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   <div className="flex justify-between">
                     <dt>HP</dt>

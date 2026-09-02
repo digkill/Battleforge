@@ -130,6 +130,43 @@ export function BattleScene({
   )
 }
 
+/** Модель на поворотном круге — для карточки юнита в коллекции. */
+function Turntable({ defId }: { defId: string }) {
+  const group = useRef<Group>(null)
+  const { scene } = useGLTF(MODEL_PATH(defId))
+  const model = useMemo(() => scene.clone(true), [scene])
+
+  useFrame((_, delta) => {
+    if (group.current) group.current.rotation.y += delta * 0.5
+  })
+
+  return (
+    <group ref={group} position={[0, -0.85, 0]}>
+      <primitive object={model} scale={1.15} />
+    </group>
+  )
+}
+
+export function UnitPreview({ defId }: { defId: string }) {
+  return (
+    <div className="h-44 w-full overflow-hidden rounded-md bg-[#120e18]">
+      <Canvas
+        camera={{ position: [0, 0.35, 2.6], fov: 40 }}
+        // Карточек в коллекции до шести, и каждая держит свой WebGL-контекст —
+        // ограничиваем разрешение, иначе на мобильном это заметно по батарее.
+        dpr={[1, 1.5]}
+      >
+        <Suspense fallback={null}>
+          <ambientLight intensity={0.8} />
+          <directionalLight position={[2, 4, 3]} intensity={1.8} />
+          <Environment preset="sunset" />
+          <Turntable defId={defId} />
+        </Suspense>
+      </Canvas>
+    </div>
+  )
+}
+
 // Модели тянутся заранее: бой начинается сразу после матчмейкинга, и ждать
 // загрузку уже во время первого хода — значит показать пустую арену.
 KNOWN_MODELS.forEach((defId) => useGLTF.preload(MODEL_PATH(defId)))
