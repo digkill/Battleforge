@@ -6,6 +6,9 @@ services:
     environment:
       PIKABU_SECRET_KEY: ${PIKABU_SECRET_KEY:?укажите PIKABU_SECRET_KEY в .env — ключ из Студии Pikabu}
       ADDR: :8080
+      # Через сколько секунд ожидания подставить виртуального соперника.
+      # Пусто (по умолчанию) — ботов нет, ждём только живого игрока.
+      BOT_OPPONENT_AFTER_SEC: ${BOT_OPPONENT_AFTER_SEC:-}
     # Наружу не публикуется: единственный клиент бэкенда — nginx фронтенда,
     # который ходит на backend:8080 по внутренней сети стека.
     expose:
