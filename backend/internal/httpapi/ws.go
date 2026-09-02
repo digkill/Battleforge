@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -83,12 +86,25 @@ func (s *Server) attachToRoom(rm *room, b *battle.Battle, playerID string, conn 
 		rm.connB = conn
 	}
 	rm.attached++
-	if rm.attached == 2 {
+	if rm.attached == rm.needAttached() {
 		delete(s.rooms, b)
 		close(rm.ready)
 		return true
 	}
 	return false
+}
+
+// needAttached — сколько соединений ждать до старта боя. У виртуального
+// соперника соединения нет, поэтому бой с ботом стартует по первому же.
+func (rm *room) needAttached() int {
+	n := 2
+	if battle.IsBot(rm.playerA) {
+		n--
+	}
+	if battle.IsBot(rm.playerB) {
+		n--
+	}
+	return n
 }
 
 func (rm *room) connFor(playerID string) *websocket.Conn {
@@ -106,6 +122,10 @@ func (rm *room) opponentOf(playerID string) string {
 }
 
 func (rm *room) send(conn *websocket.Conn, msg any) {
+	// У виртуального соперника соединения нет — его «сторона» просто молчит.
+	if conn == nil {
+		return
+	}
 	rm.writeMu.Lock()
 	defer rm.writeMu.Unlock()
 	if err := conn.WriteJSON(msg); err != nil {
@@ -155,6 +175,27 @@ func (rm *room) run(onFinish func(winner string)) {
 			"unitId": actorID,
 		})
 
+		// За бота ходит сервер: ждать действия по сокету, которого нет, значило бы
+		// повесить бой навсегда.
+		if battle.IsBot(owner) {
+			targetID, ok := rm.b.BotChooseTarget(actorID)
+			if !ok {
+				break
+			}
+			time.Sleep(botThinkTime)
+			entry, err := rm.b.Act(actorID, targetID)
+			if err != nil {
+				log.Printf("battle ws: bot move failed: %v", err)
+				break
+			}
+			rm.broadcast(map[string]any{
+				"type":  "battle_update",
+				"log":   entry,
+				"units": rm.b.Snapshot(),
+			})
+			continue
+		}
+
 		select {
 		case loser := <-rm.disconnect:
 			winner := rm.opponentOf(loser)
@@ -190,6 +231,21 @@ func (rm *room) run(onFinish func(winner string)) {
 }
 
 const battleWinReward = 100
+
+// botThinkTime — пауза перед ходом бота. Без неё бой против виртуального
+// соперника пролетает мгновенно и выглядит как один рывок полосок HP.
+const botThinkTime = 900 * time.Millisecond
+
+// botQueueTimeout: сколько ждать живого соперника, прежде чем подставить бота.
+// Ноль (значение по умолчанию) выключает ботов совсем — иначе на проде игроки
+// фармили бы золото о заведомо предсказуемого противника.
+func botQueueTimeout() time.Duration {
+	sec, err := strconv.Atoi(os.Getenv("BOT_OPPONENT_AFTER_SEC"))
+	if err != nil || sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
 
 func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	playerID := r.URL.Query().Get("playerId")
@@ -228,8 +284,31 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	defer close(done)
 	msgs, closed := readPump(conn, done)
 
+	// Ждать бота бесконечно нельзя: при выключенной опции таймер просто не
+	// заводится, и поведение остаётся прежним — ждём живого соперника.
+	var botTimer <-chan time.Time
+	if d := botQueueTimeout(); d > 0 {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		botTimer = t.C
+	}
+
 	var match *battle.Match
 	select {
+	case <-botTimer:
+		// Живой соперник мог забрать нас ровно в этот момент — тогда MatchBot
+		// вернёт nil, и матч придёт по своему каналу как обычно.
+		if match = s.matchmaker.MatchBot(playerID); match == nil {
+			select {
+			case match = <-waiting.Matched:
+			case <-closed:
+				s.matchmaker.Cancel(playerID)
+				return
+			}
+		} else {
+			<-waiting.Matched // MatchBot кладёт матч в канал, вычитываем свою же запись
+		}
+
 	case match = <-waiting.Matched:
 	case <-closed:
 		// Игрок закрыл вкладку или нажал «Отменить», не дождавшись соперника.
@@ -256,6 +335,10 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	isLast := s.attachToRoom(rm, match.Battle, playerID, conn)
 	if isLast {
 		go rm.run(func(winner string) {
+			// За бота золото начислять некому: AddGold завёл бы фантомного игрока.
+			if battle.IsBot(winner) {
+				return
+			}
 			s.players.AddGold(winner, battleWinReward)
 		})
 	} else {

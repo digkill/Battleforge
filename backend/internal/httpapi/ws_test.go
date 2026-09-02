@@ -184,3 +184,46 @@ func TestBattleWS_DisconnectWhileQueuedFreesTheQueue(t *testing.T) {
 	recvType(t, bobCh, "battle_start")
 	recvType(t, carolCh, "battle_start")
 }
+
+// TestBattleWS_BotOpponentPlaysFullBattle — в dev-режиме игрок, не дождавшийся
+// живого соперника, должен получить бой с виртуальным: комната стартует по
+// одному соединению, а ходы за бота делает сервер.
+func TestBattleWS_BotOpponentPlaysFullBattle(t *testing.T) {
+	t.Setenv("BOT_OPPONENT_AFTER_SEC", "1")
+
+	s := startTestServer(t)
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/battle/ws"
+
+	alice := dialBattleWS(t, wsURL, "alice")
+	aliceCh := startReader(alice)
+	if err := alice.WriteJSON(map[string]any{"type": "queue", "unitIds": []string{"u1", "u2", "u3"}}); err != nil {
+		t.Fatalf("alice queue: %v", err)
+	}
+	recvType(t, aliceCh, "queued")
+
+	start := recvType(t, aliceCh, "battle_start")
+	if start["playerB"] != "bot:trainer" {
+		t.Fatalf("expected bot as opponent, got %v", start["playerB"])
+	}
+
+	deadline := time.After(60 * time.Second)
+	conns := map[string]*websocket.Conn{"alice": alice}
+	for {
+		select {
+		case msg, ok := <-aliceCh:
+			if !ok {
+				t.Fatal("alice channel closed unexpectedly")
+			}
+			if done, winner := handleMsg(t, "alice", msg, conns); done {
+				if winner != "alice" && winner != "bot:trainer" {
+					t.Fatalf("unexpected winner: %q", winner)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("battle vs bot did not finish within deadline")
+		}
+	}
+}

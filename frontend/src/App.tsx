@@ -28,11 +28,17 @@ function App() {
 
   return (
     <div className="min-h-svh bg-background text-foreground flex flex-col">
-      <header className="border-b px-6 py-4 flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Battleforge</h1>
+      <header className="flex items-center justify-between gap-3 border-b border-primary/25 bg-gradient-to-b from-primary/10 to-transparent px-6 py-4">
+        <h1 className="text-2xl text-primary drop-shadow-[0_1px_6px_oklch(0.78_0.135_78_/_35%)]">
+          Battleforge
+        </h1>
         <div className="flex items-center gap-2">
           {isDevFallback && <Badge variant="outline">Dev-режим (вне платформы Pikabu)</Badge>}
-          {player && <Badge variant="secondary">Золото: {player.gold}</Badge>}
+          {player && (
+            <Badge variant="secondary" className="border-primary/40 text-primary">
+              ⚜ {player.gold} золота
+            </Badge>
+          )}
         </div>
       </header>
 

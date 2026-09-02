@@ -61,6 +61,29 @@ func (m *Matchmaker) Enqueue(playerID string, squad []units.Instance) *Waiting {
 	return self
 }
 
+// MatchBot снимает игрока с очереди и ставит против виртуального соперника.
+//
+// Возвращает nil, если игрока в очереди уже нет: пока шло ожидание, его мог
+// забрать живой соперник — подсунуть боту уже занятого игрока нельзя.
+func (m *Matchmaker) MatchBot(playerID string) *Match {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.waiting == nil || m.waiting.PlayerID != playerID {
+		return nil
+	}
+	self := m.waiting
+	m.waiting = nil
+
+	b, err := New(self.Squad, NewBotSquad(self.Squad))
+	if err != nil {
+		return nil
+	}
+	match := &Match{Battle: b, PlayerA: playerID, PlayerB: BotPlayerID}
+	self.Matched <- match
+	return match
+}
+
 // Cancel убирает игрока из очереди ожидания, если он там ещё стоит.
 func (m *Matchmaker) Cancel(playerID string) {
 	m.mu.Lock()
