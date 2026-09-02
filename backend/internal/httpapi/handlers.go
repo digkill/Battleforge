@@ -38,6 +38,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/pikabu/purchases/confirm", s.handleConfirmPurchase)
 	mux.HandleFunc("GET /api/collection", s.handleGetCollection)
 	mux.HandleFunc("POST /api/collection/upgrade", s.handleUpgradeUnit)
+	mux.HandleFunc("GET /api/tavern", s.handleTavern)
+	mux.HandleFunc("POST /api/tavern/hire", s.handleHireUnit)
 	mux.HandleFunc("GET /api/battle/ws", s.handleBattleWS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return withCORS(mux)

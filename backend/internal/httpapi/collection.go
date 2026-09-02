@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 
 	"battleforge/backend/internal/player"
+	"battleforge/backend/internal/units"
 )
 
 // playerID достаёт идентификатора игрока из заголовка X-Player-Id.
@@ -26,6 +28,61 @@ func (s *Server) handleGetCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.players.GetOrCreate(id)
 	writeJSON(w, http.StatusOK, p)
+}
+
+// handleTavern отдаёт, кого можно нанять и почём. Цены считает бэкенд —
+// клиенту нельзя доверять стоимость, иначе войско набирается бесплатно.
+func (s *Server) handleTavern(w http.ResponseWriter, _ *http.Request) {
+	type offer struct {
+		DefID string      `json:"defId"`
+		Name  string      `json:"name"`
+		Cost  int         `json:"cost"`
+		Stats units.Stats `json:"stats"`
+	}
+	offers := make([]offer, 0, len(units.Catalog))
+	for id, def := range units.Catalog {
+		if !units.Hireable(id) {
+			continue
+		}
+		offers = append(offers, offer{
+			DefID: id,
+			Name:  def.Name,
+			Cost:  def.HireCost(),
+			Stats: def.StatsAtLevel(1),
+		})
+	}
+	sort.Slice(offers, func(i, j int) bool { return offers[i].Cost < offers[j].Cost })
+	writeJSON(w, http.StatusOK, map[string]any{"offers": offers})
+}
+
+type hireRequest struct {
+	DefID string `json:"defId"`
+}
+
+func (s *Server) handleHireUnit(w http.ResponseWriter, r *http.Request) {
+	id, ok := playerID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "missing_player_id", "заголовок X-Player-Id обязателен")
+		return
+	}
+
+	var req hireRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	p, inst, err := s.players.Hire(id, req.DefID)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]any{"player": p, "unit": inst})
+	case errors.Is(err, player.ErrUnitNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "такого юнита нанять нельзя")
+	case errors.Is(err, player.ErrNotEnoughGold):
+		writeError(w, http.StatusPaymentRequired, "not_enough_gold", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
 }
 
 type upgradeRequest struct {

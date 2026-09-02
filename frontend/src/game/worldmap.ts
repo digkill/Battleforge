@@ -23,8 +23,13 @@ export type World = {
   height: number
   rows: WorldTerrain[][]
   hero: WorldHex
+  /** Замок: сюда герой возвращается нанимать войско. */
+  castle: WorldHex
   lairs: Lair[]
 }
+
+/** Очков передвижения у героя на один день. */
+export const MOVES_PER_DAY = 14
 
 export const WORLD_WIDTH = 14
 export const WORLD_HEIGHT = 11
@@ -105,6 +110,11 @@ export function hexDistance(a: WorldHex, b: WorldHex): number {
 
 export function hexKey(h: WorldHex): string {
   return `${h.col}:${h.row}`
+}
+
+/** Суммарная цена маршрута — сколько очков передвижения он съест. */
+export function pathCost(world: World, path: WorldHex[]): number {
+  return path.reduce((sum, h) => sum + moveCost(world.rows[h.row][h.col]), 0)
 }
 
 /** Путь героя до клетки с учётом местности, или null, если пути нет. */
@@ -202,6 +212,8 @@ export function generateWorld(seed: number): World {
 
   const hero: WorldHex = { col: 0, row: Math.floor(height / 2) }
   rows[hero.row][hero.col] = 'road'
+  // Замок стоит на старте героя: возвращаться нанимать войско недалеко.
+  const castle: WorldHex = { ...hero }
 
   // Логова расставляются подальше от героя, чтобы первый шаг не оказался боем.
   const lairs: Lair[] = []
@@ -221,5 +233,5 @@ export function generateWorld(seed: number): World {
     })
   }
 
-  return { width, height, rows, hero, lairs }
+  return { width, height, rows, hero, castle, lairs }
 }

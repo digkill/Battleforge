@@ -8,17 +8,21 @@ import {
   findPath,
   generateWorld,
   hexKey,
-  moveCost,
+  MOVES_PER_DAY,
+  pathCost,
   type Lair,
   type World,
   type WorldHex,
 } from './worldmap'
+import { getTavern, hireUnit, type TavernOffer } from './api'
 
 const WorldScene = lazy(() => import('./WorldScene').then((m) => ({ default: m.WorldScene })))
 
 const SEED_KEY = 'battleforge-world-seed'
 const HERO_KEY = 'battleforge-world-hero'
 const CLEARED_KEY = 'battleforge-world-cleared'
+const DAY_KEY = 'battleforge-world-day'
+const MOVES_KEY = 'battleforge-world-moves'
 
 /** Шаг героя по карте — пауза между клетками, чтобы движение было видно. */
 const STEP_MS = 260
@@ -30,10 +34,14 @@ const STEP_MS = 260
  */
 export function WorldView({
   player,
+  playerId,
   onEnterLair,
+  onPlayerChange,
 }: {
   player: PlayerState
+  playerId: string
   onEnterLair: (lair: Lair) => void
+  onPlayerChange: (p: PlayerState) => void
 }) {
   const [world, setWorld] = useState<World>(() => {
     let seed = Number(localStorage.getItem(SEED_KEY))
@@ -56,6 +64,14 @@ export function WorldView({
   const [hero, setHero] = useState<WorldHex>(world.hero)
   const [moving, setMoving] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [day, setDay] = useState(() => Number(localStorage.getItem(DAY_KEY)) || 1)
+  const [movesLeft, setMovesLeft] = useState(() => {
+    const saved = Number(localStorage.getItem(MOVES_KEY))
+    return Number.isFinite(saved) && saved > 0 ? saved : MOVES_PER_DAY
+  })
+  const [tavernOpen, setTavernOpen] = useState(false)
+  const [offers, setOffers] = useState<TavernOffer[]>([])
+  const [hiring, setHiring] = useState<string | null>(null)
   // Идентификатор текущего перехода: если игрок кликнул новую цель, старый
   // маршрут обязан прекратиться, иначе герой пойдёт по двум путям сразу.
   const walkId = useRef(0)
@@ -63,6 +79,18 @@ export function WorldView({
   useEffect(() => {
     localStorage.setItem(HERO_KEY, hexKey(hero))
   }, [hero])
+
+  useEffect(() => {
+    localStorage.setItem(DAY_KEY, String(day))
+    localStorage.setItem(MOVES_KEY, String(movesLeft))
+  }, [day, movesLeft])
+
+  useEffect(() => {
+    if (!tavernOpen || offers.length > 0) return
+    getTavern(playerId)
+      .then((r) => setOffers(r.offers))
+      .catch((e: Error) => setNotice(e.message))
+  }, [tavernOpen, offers.length, playerId])
 
   const blocked = useMemo(
     () => new Set(world.lairs.filter((l) => !l.cleared).map((l) => hexKey(l.at))),
@@ -73,19 +101,18 @@ export function WorldView({
   // подсказывает, что вообще доступно.
   const reachable = useMemo(() => {
     const out = new Set<string>()
-    const budget = 12
+    const budget = movesLeft
     for (let row = 0; row < world.height; row++) {
       for (let col = 0; col < world.width; col++) {
         const to = { col, row }
         if (hexKey(to) === hexKey(hero)) continue
         const path = findPath(world, hero, to, blocked)
         if (!path) continue
-        const cost = path.reduce((sum, h) => sum + moveCost(world.rows[h.row][h.col]), 0)
-        if (cost <= budget) out.add(hexKey(to))
+        if (pathCost(world, path) <= budget) out.add(hexKey(to))
       }
     }
     return out
-  }, [world, hero, blocked])
+  }, [world, hero, blocked, movesLeft])
 
   const walk = useCallback(
     async (path: WorldHex[], onArrive?: () => void) => {
@@ -111,9 +138,15 @@ export function WorldView({
         return
       }
       if (path.length === 0) return
+      const cost = pathCost(world, path)
+      if (cost > movesLeft) {
+        setNotice('Герой выдохся — очков передвижения не хватит. Начните следующий день.')
+        return
+      }
+      setMovesLeft((m) => m - cost)
       void walk(path)
     },
-    [world, hero, blocked, walk],
+    [world, hero, blocked, walk, movesLeft],
   )
 
   const attackLair = useCallback(
@@ -127,9 +160,15 @@ export function WorldView({
       // Останавливаемся на клетке перед логовом: занимать его герой не должен,
       // туда он войдёт только после победы.
       const approach = path.slice(0, -1)
+      const cost = pathCost(world, approach)
+      if (cost > movesLeft) {
+        setNotice('До логова в этот день не дойти — начните следующий.')
+        return
+      }
+      setMovesLeft((m) => m - cost)
       void walk(approach, () => onEnterLair(lair))
     },
-    [world, hero, blocked, walk, onEnterLair],
+    [world, hero, blocked, walk, onEnterLair, movesLeft],
   )
 
   const clearLair = useCallback((lairId: string) => {
@@ -144,15 +183,46 @@ export function WorldView({
       clearLair
   }, [clearLair])
 
+  const nextDay = useCallback(() => {
+    setDay((d) => d + 1)
+    setMovesLeft(MOVES_PER_DAY)
+    setNotice(null)
+  }, [])
+
+  const hire = useCallback(
+    async (offer: TavernOffer) => {
+      setHiring(offer.defId)
+      setNotice(null)
+      try {
+        const { player: updated } = await hireUnit(playerId, offer.defId)
+        onPlayerChange(updated)
+      } catch (e) {
+        setNotice((e as Error).message)
+      } finally {
+        setHiring(null)
+      }
+    },
+    [playerId, onPlayerChange],
+  )
+
   const remaining = world.lairs.filter((l) => !l.cleared).length
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xl">Карта земель</h2>
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary">Логов осталось: {remaining}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary" className="border-primary/40 text-primary">
+            День {day}
+          </Badge>
+          <Badge variant={movesLeft > 0 ? 'secondary' : 'outline'}>
+            Переходы: {movesLeft}/{MOVES_PER_DAY}
+          </Badge>
+          <Badge variant="outline">Логов осталось: {remaining}</Badge>
           <Badge variant="outline">Отряд: {player.units.length}</Badge>
+          <Button type="button" size="sm" onClick={nextDay}>
+            Следующий день
+          </Button>
         </div>
       </div>
 
@@ -166,10 +236,46 @@ export function WorldView({
           reachable={reachable}
           onPickHex={goTo}
           onPickLair={attackLair}
+          onPickCastle={() => setTavernOpen((v) => !v)}
         />
       </Suspense>
 
       {notice && <p className="text-sm text-destructive">{notice}</p>}
+
+      {tavernOpen && (
+        <Card className="border-primary/40">
+          <CardHeader>
+            <CardTitle className="text-base">Замок — найм войска</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {offers.length === 0 && (
+              <p className="text-sm text-muted-foreground">Загружаем предложения…</p>
+            )}
+            {offers.map((offer) => (
+              <div key={offer.defId} className="rounded-md border border-border p-3">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="font-medium">{offer.name}</span>
+                  <Badge variant="secondary">{offer.cost} зол.</Badge>
+                </div>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  HP {offer.stats.hp} · Атака {offer.stats.atk} · Защита {offer.stats.def} · Скорость{' '}
+                  {offer.stats.spd}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="w-full"
+                  disabled={hiring === offer.defId || player.gold < offer.cost}
+                  onClick={() => void hire(offer)}
+                >
+                  {player.gold < offer.cost ? 'Не хватает золота' : 'Нанять'}
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -182,6 +288,10 @@ export function WorldView({
             присоединится к отряду.
           </p>
           <p>Горы и вода непроходимы, лес замедляет, по дороге идти быстрее всего.</p>
+          <p>
+            Кликните по замку с голубым кольцом — там нанимают войско за золото. Когда переходы
+            кончатся, начните следующий день.
+          </p>
         </CardContent>
       </Card>
 

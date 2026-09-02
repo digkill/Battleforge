@@ -104,7 +104,12 @@ function App() {
         )}
 
         {player && !lair && screen === 'map' && (
-          <WorldView player={player} onEnterLair={setLair} />
+          <WorldView
+            player={player}
+            playerId={playerId}
+            onEnterLair={setLair}
+            onPlayerChange={setPlayer}
+          />
         )}
 
         {player && !lair && screen === 'army' && (

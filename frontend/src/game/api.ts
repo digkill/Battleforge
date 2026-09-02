@@ -49,3 +49,21 @@ export function battleWsUrl(playerId: string): string {
   const wsProtocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${wsProtocol}//${httpUrl.host}/api/battle/ws?playerId=${encodeURIComponent(playerId)}`
 }
+
+export type TavernOffer = {
+  defId: string
+  name: string
+  cost: number
+  stats: { hp: number; atk: number; def: number; spd: number }
+}
+
+export function getTavern(playerId: string): Promise<{ offers: TavernOffer[] }> {
+  return request<{ offers: TavernOffer[] }>('/api/tavern', playerId)
+}
+
+export function hireUnit(playerId: string, defId: string): Promise<{ player: PlayerState }> {
+  return request<{ player: PlayerState }>('/api/tavern/hire', playerId, {
+    method: 'POST',
+    body: JSON.stringify({ defId }),
+  })
+}

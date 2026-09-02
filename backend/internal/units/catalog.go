@@ -96,3 +96,18 @@ func (d Definition) StatsAtLevel(level int) Stats {
 func UpgradeCost(level int) int {
 	return 50 * level
 }
+
+// HireCost — цена найма юнита в замке. Считается от суммы базовых характеристик,
+// чтобы прайс не расходился с каталогом при добавлении новых типов: сильный
+// юнит автоматически дороже, и таблицу цен не нужно править руками.
+func (d Definition) HireCost() int {
+	s := d.Base
+	return 10 * (s.HP/10 + s.ATK + s.DEF + s.SPD)
+}
+
+// Hireable сообщает, можно ли нанять этот тип в замке. Крипов не нанимают —
+// их берут в бою.
+func Hireable(defID string) bool {
+	_, ok := Catalog[defID]
+	return ok && !IsCreep(defID)
+}

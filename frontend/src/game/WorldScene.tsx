@@ -113,6 +113,33 @@ function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
   )
 }
 
+/** Замок — простая башня из примитивов: отдельная модель под него не нужна. */
+function Castle({ at, onPick }: { at: WorldHex; onPick: () => void }) {
+  const [x, z] = hexToWorld(at)
+  return (
+    <group
+      position={[x, 0.1, z]}
+      onClick={(e) => {
+        e.stopPropagation()
+        onPick()
+      }}
+    >
+      <mesh position={[0, 0.3, 0]}>
+        <boxGeometry args={[0.62, 0.6, 0.62]} />
+        <meshStandardMaterial color="#8a7b63" roughness={0.9} />
+      </mesh>
+      <mesh position={[0, 0.75, 0]}>
+        <coneGeometry args={[0.42, 0.4, 6]} />
+        <meshStandardMaterial color="#b1452f" roughness={0.8} />
+      </mesh>
+      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.42, 0.54, 24]} />
+        <meshBasicMaterial color="#7fd1e8" transparent opacity={0.8} />
+      </mesh>
+    </group>
+  )
+}
+
 function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void }) {
   const group = useRef<Group>(null)
   const { scene, animations } = useGLTF(CREEP_MODEL)
@@ -161,6 +188,7 @@ export function WorldScene({
   reachable,
   onPickHex,
   onPickLair,
+  onPickCastle,
 }: {
   world: World
   heroAt: WorldHex
@@ -168,6 +196,7 @@ export function WorldScene({
   reachable: Set<string>
   onPickHex: (h: WorldHex) => void
   onPickLair: (l: Lair) => void
+  onPickCastle: () => void
 }) {
   const center = hexToWorld({
     col: Math.floor(world.width / 2),
@@ -198,6 +227,7 @@ export function WorldScene({
           <directionalLight position={[8, 14, 6]} intensity={1.5} castShadow />
           <Environment preset="sunset" />
           {tiles}
+          <Castle at={world.castle} onPick={onPickCastle} />
           {world.lairs
             .filter((l) => !l.cleared)
             .map((l) => (

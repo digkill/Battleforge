@@ -114,6 +114,34 @@ func (s *Store) AddGold(playerID string, amount int) *Player {
 	return p.clone()
 }
 
+// Hire нанимает юнита в замке за золото. В отличие от Recruit проверяет цену:
+// найм — это трата, а вербовка крипа — награда за бой.
+func (s *Store) Hire(playerID, defID string) (*Player, units.Instance, error) {
+	def, ok := units.Catalog[defID]
+	if !ok || !units.Hireable(defID) {
+		return nil, units.Instance{}, ErrUnitNotFound
+	}
+	cost := def.HireCost()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := s.getOrCreateLocked(playerID)
+	if p.Gold < cost {
+		return nil, units.Instance{}, ErrNotEnoughGold
+	}
+	p.Gold -= cost
+
+	s.nextUID++
+	inst := units.Instance{
+		InstanceID: fmt.Sprintf("u%d", s.nextUID),
+		DefID:      defID,
+		Level:      1,
+	}
+	p.Units = append(p.Units, inst)
+	return p.clone(), inst, nil
+}
+
 // Recruit добавляет игроку юнита указанного типа — например побеждённого крипа.
 // Возвращает обновлённого игрока и добавленный юнит.
 func (s *Store) Recruit(playerID, defID string, level int) (*Player, units.Instance, error) {
