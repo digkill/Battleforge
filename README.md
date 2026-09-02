@@ -41,14 +41,14 @@ cp .env.example .env   # вписать PIKABU_SECRET_KEY
 docker compose up -d --build
 ```
 
-- backend слушает `http://localhost:8080` (порт настраивается через `BACKEND_PORT` в `.env`).
-- frontend (статика на nginx) — `http://localhost:5183` (`FRONTEND_PORT`).
+Вся игра доступна на одном адресе — `http://localhost:5183` (`FRONTEND_PORT`). Backend
+наружу не публикуется: nginx фронтенда проксирует `/api/` (включая WebSocket боя) на
+`backend:8080` по внутренней сети стека.
 
-`VITE_API_URL` встраивается в статический бандл фронтенда **на этапе сборки образа**
-(`docker compose build`, не `up`) и должен указывать на адрес backend, доступный из браузера
-пользователя, а не из docker-сети — поэтому по умолчанию `http://localhost:8080`, а не
-`http://backend:8080`. Если меняете `VITE_API_URL` или `BACKEND_PORT` в `.env`, пересоберите
-фронтенд: `docker compose build frontend`.
+Один origin выбран не для красоты: игра открывается в iframe на `https://games.pikabu.ru`,
+и обращение из неё на бэкенд по другому адресу упёрлось бы в CORS, а по `http://` — ещё и
+в блокировку mixed content. Заодно адрес бэкенда больше не вшивается в бандл на этапе
+сборки, поэтому смена домена не требует пересборки фронтенда.
 
 ```sh
 docker compose logs -f       # логи обоих сервисов
@@ -60,7 +60,8 @@ docker compose down          # остановить и убрать контей
 ```sh
 cd frontend
 npm install
-cp .env.example .env   # VITE_API_URL — адрес backend, по умолчанию http://localhost:8080
+cp .env.example .env   # VITE_API_URL нужен только тут: vite отдаёт фронт на :5173,
+                        # а backend слушает :8080 — это разные origin
 npm run dev             # локальная разработка
 npm run build            # сборка в dist/ для загрузки в Студию Pikabu
 ```
@@ -116,5 +117,13 @@ WebSocket `GET /api/battle/ws?playerId=...`:
   несколько параллельных очередей.
 - Подключить 3D-сцену (`frontend/src/game/Scene.tsx`) как визуализацию арены боя.
 - Ознакомиться с разделом «Требования к игре» в документации SDK перед публикацией.
-- Для деплоя за реальным доменом добавить reverse-proxy с TLS (Caddy/Traefik/nginx) перед
-  обоими контейнерами вместо голых портов из docker-compose.yml.
+## Деплой
+
+Стек разворачивается в Coolify как docker-compose приложение на домене
+`battleforge.sorapure.fun`. Домен вешается на сервис `frontend` — он же терминирует
+весь трафик игры, включая `/api/`. TLS выпускает Coolify (Traefik + Let's Encrypt),
+поэтому отдельный reverse-proxy не нужен.
+
+`PIKABU_SECRET_KEY` задаётся переменной окружения приложения в Coolify и берётся из
+карточки игры в Студии Pikabu (вкладка «Секретный ключ»). Ключ генерируется один раз
+и не восстанавливается — в репозиторий он не попадает.

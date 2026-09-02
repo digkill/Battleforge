@@ -146,3 +146,41 @@ func handleMsg(t *testing.T, player string, msg map[string]any, conns map[string
 		return false, ""
 	}
 }
+
+// TestBattleWS_DisconnectWhileQueuedFreesTheQueue — регрессия: игрок, закрывший
+// сокет в очереди, раньше оставался в матчмейкере призраком. Следующий вошедший
+// матчился с ним, создавал комнату и навсегда зависал на <-rm.ready, потому что
+// второе соединение никогда не подключалось.
+func TestBattleWS_DisconnectWhileQueuedFreesTheQueue(t *testing.T) {
+	s := startTestServer(t)
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/battle/ws"
+
+	// alice встаёт в очередь и уходит, не дождавшись соперника
+	alice := dialBattleWS(t, wsURL, "alice")
+	aliceCh := startReader(alice)
+	if err := alice.WriteJSON(map[string]any{"type": "queue", "unitIds": []string{"u1"}}); err != nil {
+		t.Fatalf("alice queue: %v", err)
+	}
+	recvType(t, aliceCh, "queued")
+	alice.Close()
+
+	// bob и carol должны спокойно найти друг друга
+	bob := dialBattleWS(t, wsURL, "bob")
+	bobCh := startReader(bob)
+	if err := bob.WriteJSON(map[string]any{"type": "queue", "unitIds": []string{"u4"}}); err != nil {
+		t.Fatalf("bob queue: %v", err)
+	}
+	recvType(t, bobCh, "queued")
+
+	carol := dialBattleWS(t, wsURL, "carol")
+	carolCh := startReader(carol)
+	if err := carol.WriteJSON(map[string]any{"type": "queue", "unitIds": []string{"u7"}}); err != nil {
+		t.Fatalf("carol queue: %v", err)
+	}
+	recvType(t, carolCh, "queued")
+
+	recvType(t, bobCh, "battle_start")
+	recvType(t, carolCh, "battle_start")
+}

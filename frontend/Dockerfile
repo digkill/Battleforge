@@ -6,10 +6,10 @@ RUN npm ci
 
 COPY . .
 
-# VITE_API_URL встраивается в статический бандл на этапе сборки (Vite inlines
-# import.meta.env.* при билде) — должен указывать на адрес backend, доступный
-# из БРАУЗЕРА пользователя, а не из docker-сети.
-ARG VITE_API_URL=http://localhost:8080
+# По умолчанию пусто — фронтенд ходит на тот же origin, а nginx этого же образа
+# проксирует /api на backend. Благодаря этому адрес бэкенда не вшивается в бандл
+# и образ не нужно пересобирать при смене домена.
+ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build

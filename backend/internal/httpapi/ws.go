@@ -222,7 +222,28 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 	_ = conn.WriteJSON(map[string]any{"type": "queued"})
 	waiting := s.matchmaker.Enqueue(playerID, squad)
 
-	match := <-waiting.Matched
+	// С этого момента и до конца соединения читает сокет только readPump —
+	// два конкурирующих ReadJSON (ожидание в очереди и бой) недопустимы.
+	done := make(chan struct{})
+	defer close(done)
+	msgs, closed := readPump(conn, done)
+
+	var match *battle.Match
+	select {
+	case match = <-waiting.Matched:
+	case <-closed:
+		// Игрок закрыл вкладку или нажал «Отменить», не дождавшись соперника.
+		// Без снятия с очереди протухший Waiting остался бы в матчмейкере, и
+		// следующий вошедший сматчился бы с призраком, навсегда зависнув на ready.
+		s.matchmaker.Cancel(playerID)
+		// Матч мог сформироваться ровно между разрывом и Cancel — тогда соперник
+		// уже получил Match и ждёт нас в комнате, бросать его нельзя.
+		select {
+		case match = <-waiting.Matched:
+		default:
+			return
+		}
+	}
 
 	s.roomsMu.Lock()
 	rm, exists := s.rooms[match.Battle]
@@ -241,22 +262,47 @@ func (s *Server) handleBattleWS(w http.ResponseWriter, r *http.Request) {
 		<-rm.ready
 	}
 
-	// read pump: пересылаем действия игрока в комнату до разрыва соединения
+	// Пересылаем действия игрока в комнату до разрыва соединения.
 	for {
-		var m incoming
-		if err := conn.ReadJSON(&m); err != nil {
+		select {
+		case <-closed:
 			rm.reportDisconnect(playerID)
 			return
-		}
-		if m.Type != "action" {
-			continue
-		}
-		select {
-		case rm.actions <- playerAction{playerID: playerID, targetID: m.TargetID}:
-		case <-rm.disconnect:
-			return
+
+		case m := <-msgs:
+			if m.Type != "action" {
+				continue
+			}
+			select {
+			case rm.actions <- playerAction{playerID: playerID, targetID: m.TargetID}:
+			case <-rm.disconnect:
+				return
+			}
 		}
 	}
+}
+
+// readPump — единственный читатель соединения: складывает сообщения клиента в
+// msgs и закрывает closed при первой ошибке чтения (в том числе при разрыве).
+// Завершается по done, чтобы не зависнуть на отправке в msgs, когда бой уже окончен.
+func readPump(conn *websocket.Conn, done <-chan struct{}) (<-chan incoming, <-chan struct{}) {
+	msgs := make(chan incoming)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for {
+			var m incoming
+			if err := conn.ReadJSON(&m); err != nil {
+				return
+			}
+			select {
+			case msgs <- m:
+			case <-done:
+				return
+			}
+		}
+	}()
+	return msgs, closed
 }
 
 func resolveSquad(p *player.Player, unitIDs []string) ([]units.Instance, error) {

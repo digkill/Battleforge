@@ -117,17 +117,27 @@ func (b *Battle) startRound() {
 }
 
 // CurrentTurn возвращает instanceID юнита, чей сейчас ход, и false, если бой окончен.
+//
+// Очередь строится один раз на раунд, а юнит может погибнуть до своего хода внутри
+// того же раунда — такие пропускаются. Без этого Act() вернул бы ErrUnitNotFound,
+// не сдвинув turnIdx, и бой завис бы на мёртвом юните навсегда.
 func (b *Battle) CurrentTurn() (string, bool) {
 	if b.Winner() != nil {
 		return "", false
 	}
-	if b.turnIdx >= len(b.order) {
+	for {
+		for b.turnIdx < len(b.order) && !b.fighters[b.order[b.turnIdx]].Alive() {
+			b.turnIdx++
+		}
+		if b.turnIdx < len(b.order) {
+			return b.order[b.turnIdx], true
+		}
+		// Раунд исчерпан — строим очередь заново уже только из живых.
 		b.startRound()
+		if len(b.order) == 0 {
+			return "", false
+		}
 	}
-	if len(b.order) == 0 {
-		return "", false
-	}
-	return b.order[b.turnIdx], true
 }
 
 // Act выполняет ход текущего юнита: атаку по targetID. Возвращает запись лога.

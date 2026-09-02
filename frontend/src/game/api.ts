@@ -10,7 +10,11 @@ export type PlayerState = {
   units: UnitInstance[]
 }
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
+// Пустая строка = тот же origin, что и сама страница: в проде nginx фронтенда
+// проксирует /api на бэкенд, поэтому адрес бэкенда не нужно вшивать в бандл на
+// этапе сборки. VITE_API_URL остаётся для локальной разработки, где vite отдаёт
+// фронтенд на :5173, а бэкенд слушает :8080.
+const API_URL = import.meta.env.VITE_API_URL ?? ''
 
 async function request<T>(path: string, playerId: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -40,7 +44,8 @@ export function upgradeUnit(playerId: string, instanceId: string): Promise<Playe
 }
 
 export function battleWsUrl(playerId: string): string {
-  const httpUrl = new URL(API_URL)
+  // new URL('') бросает исключение, поэтому для same-origin берём адрес страницы.
+  const httpUrl = new URL(API_URL || window.location.origin)
   const wsProtocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${wsProtocol}//${httpUrl.host}/api/battle/ws?playerId=${encodeURIComponent(playerId)}`
 }

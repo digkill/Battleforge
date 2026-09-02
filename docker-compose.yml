@@ -6,17 +6,33 @@ services:
     environment:
       PIKABU_SECRET_KEY: ${PIKABU_SECRET_KEY:?укажите PIKABU_SECRET_KEY в .env — ключ из Студии Pikabu}
       ADDR: :8080
-    ports:
-      - "${BACKEND_PORT:-8080}:8080"
+    # Наружу не публикуется: единственный клиент бэкенда — nginx фронтенда,
+    # который ходит на backend:8080 по внутренней сети стека.
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+        # Пусто — фронтенд ходит на свой же origin, nginx проксирует /api на backend.
+        VITE_API_URL: ${VITE_API_URL:-}
+    environment:
+      # Coolify подставляет сюда домен приложения и заворачивает на этот сервис
+      # входящий трафик. Локально переменная просто не используется.
+      SERVICE_FQDN_FRONTEND: /
+    expose:
+      - "80"
     ports:
       - "${FRONTEND_PORT:-5183}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     restart: unless-stopped

@@ -127,3 +127,40 @@ func TestBattle_ResolvesToWinnerDeterministically(t *testing.T) {
 		t.Fatalf("expected ErrBattleOver after battle ended, got %v", err)
 	}
 }
+
+// TestBattle_3v3ResolvesWithoutStallingOnDeadUnit — регрессия: очередь ходов
+// строится один раз на раунд, и юнит может погибнуть до своего хода внутри того
+// же раунда. Раньше CurrentTurn() возвращал такого мертвеца, Act() отвечал
+// ErrUnitNotFound не сдвигая turnIdx, и бой зависал навсегда. В отряде из трёх
+// юнитов (боевой формат игры) это происходило штатно.
+func TestBattle_3v3ResolvesWithoutStallingOnDeadUnit(t *testing.T) {
+	b, err := New(
+		squad(t, "assassin", "mage", "archer"),
+		squad(t, "healer", "knight", "warrior"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	guard := 0
+	for b.Winner() == nil {
+		guard++
+		if guard > 1000 {
+			t.Fatal("бой не сошёлся — очередь ходов зациклилась")
+		}
+		actorID, ok := b.CurrentTurn()
+		if !ok {
+			t.Fatal("нет текущего хода, но бой не окончен")
+		}
+		if f, _ := b.Fighter(actorID); !f.Alive() {
+			t.Fatalf("CurrentTurn вернул мёртвого юнита %q (HP=%d)", actorID, f.CurrentHP)
+		}
+		targets := b.AliveTargets(actorID)
+		if len(targets) == 0 {
+			t.Fatalf("у %q нет целей, но бой не окончен", actorID)
+		}
+		if _, err := b.Act(actorID, targets[0]); err != nil {
+			t.Fatalf("Act(%q) вернул ошибку: %v", actorID, err)
+		}
+	}
+}
