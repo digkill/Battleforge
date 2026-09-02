@@ -58,6 +58,10 @@ export type BattleState = {
   validTargets: string[]
   winner: string | null
   endReason: string | null
+  /** Логово, с которым идёт бой, — приходит до battle_start в режиме крипов. */
+  creep: { defId: string; name: string; count: number; level: number } | null
+  /** Юнит, доставшийся за победу над логовом. */
+  recruited: { defId: string; name: string } | null
   error: string | null
 }
 
@@ -75,6 +79,8 @@ const initialState: BattleState = {
   validTargets: [],
   winner: null,
   endReason: null,
+  creep: null,
+  recruited: null,
   error: null,
 }
 
@@ -88,7 +94,7 @@ export function useBattleSocket(playerId: string) {
   const wsRef = useRef<WebSocket | null>(null)
 
   const findMatch = useCallback(
-    (unitIds: string[]) => {
+    (unitIds: string[], mode?: 'creep') => {
       wsRef.current?.close()
       setState({ ...initialState, phase: 'queued' })
 
@@ -96,7 +102,7 @@ export function useBattleSocket(playerId: string) {
       wsRef.current = ws
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'queue', unitIds }))
+        ws.send(JSON.stringify({ type: 'queue', unitIds, ...(mode ? { mode } : {}) }))
       }
 
       ws.onmessage = (event) => {
@@ -104,6 +110,16 @@ export function useBattleSocket(playerId: string) {
         switch (msg.type) {
           case 'queued':
             setState((s) => ({ ...s, phase: 'queued' }))
+            break
+          // Бой с нейтралами: сервер сообщает состав логова до начала боя.
+          case 'creep_encounter':
+            setState((s) => ({ ...s, creep: msg.creep }))
+            break
+          case 'unit_recruited':
+            setState((s) => ({
+              ...s,
+              recruited: { defId: msg.unit.defId, name: msg.unitName },
+            }))
             break
           case 'battle_start':
             setState((s) => ({

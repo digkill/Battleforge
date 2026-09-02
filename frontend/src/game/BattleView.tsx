@@ -1,10 +1,9 @@
-import { lazy, Suspense, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { lazy, Suspense, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import type { PlayerState } from './api'
-import { CATALOG } from './catalog'
+import type { Lair } from './worldmap'
 
 import { useBattleSocket, type BattleFighter } from './use-battle-socket'
 
@@ -14,65 +13,41 @@ const BattleScene = lazy(() => import('./Scene').then((m) => ({ default: m.Battl
 
 const SQUAD_SIZE = 3
 
-export function BattleView({ playerId, player }: { playerId: string; player: PlayerState }) {
-  const [selected, setSelected] = useState<string[]>([])
+export function BattleView({
+  playerId,
+  player,
+  lair,
+  onLeave,
+}: {
+  playerId: string
+  player: PlayerState
+  /** Логово с карты: бой начинается сразу, отряд собирать не нужно. */
+  lair: Lair
+  onLeave: (cleared: boolean) => void
+}) {
   const { state, findMatch, act, reset } = useBattleSocket(playerId)
 
-  function toggleUnit(instanceId: string) {
-    setSelected((s) =>
-      s.includes(instanceId)
-        ? s.filter((id) => id !== instanceId)
-        : s.length < SQUAD_SIZE
-          ? [...s, instanceId]
-          : s,
-    )
-  }
+  // В логово герой входит всем войском — выбирать отряд посреди карты незачем.
+  useEffect(() => {
+    findMatch(player.units.map((u) => u.instanceId).slice(0, SQUAD_SIZE), 'creep')
+    return () => reset()
+    // Бой на логово заводится ровно один раз при входе.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lair.id])
+
 
   if (state.phase === 'idle') {
-    return (
-      <div className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">
-          Соберите отряд ({selected.length}/{SQUAD_SIZE})
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {player.units.map((unit) => {
-            const def = CATALOG[unit.defId]
-            const isSelected = selected.includes(unit.instanceId)
-            return (
-              <button
-                key={unit.instanceId}
-                type="button"
-                onClick={() => toggleUnit(unit.instanceId)}
-                className={`rounded-lg border p-3 text-left text-sm transition-colors ${
-                  isSelected ? 'border-primary bg-accent' : 'border-border'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{def?.name ?? unit.defId}</span>
-                  <Badge variant="secondary">ур. {unit.level}</Badge>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-        {state.error && <p className="text-sm text-destructive">{state.error}</p>}
-        <Button
-          type="button"
-          disabled={selected.length === 0}
-          onClick={() => findMatch(selected)}
-        >
-          Найти бой
-        </Button>
-      </div>
-    )
+    return <p className="text-sm text-muted-foreground">Готовим сражение…</p>
   }
 
   if (state.phase === 'queued') {
     return (
       <div className="flex flex-col items-center gap-4 py-12">
-        <p className="text-muted-foreground">Ищем соперника…</p>
-        <Button type="button" variant="secondary" onClick={reset}>
-          Отменить
+        <p className="text-muted-foreground">
+          {state.creep ? `${lair.name}: ${state.creep.count} шт., ур. ${state.creep.level}` : 'Готовим сражение…'}
+        </p>
+        <Button type="button" variant="secondary" onClick={() => onLeave(false)}>
+          Отступить
         </Button>
       </div>
     )
@@ -166,11 +141,18 @@ export function BattleView({ playerId, player }: { playerId: string; player: Pla
             <CardTitle>{state.winner === playerId ? 'Победа!' : 'Поражение'}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {state.endReason === 'opponent_disconnected' && (
-              <p className="text-sm text-muted-foreground">Соперник отключился от боя.</p>
+            {state.recruited && (
+              <p className="text-sm text-primary">
+                {state.recruited.name} присоединяется к вашему войску.
+              </p>
             )}
-            <Button type="button" onClick={reset}>
-              Вернуться к выбору отряда
+            {state.winner !== playerId && (
+              <p className="text-sm text-muted-foreground">
+                Логово выстояло — оно останется на карте.
+              </p>
+            )}
+            <Button type="button" onClick={() => onLeave(state.winner === playerId)}>
+              Вернуться на карту
             </Button>
           </CardContent>
         </Card>

@@ -17,6 +17,26 @@ const MODEL_PATH = (defId: string) => `/models/${defId}/model.gltf`
 
 const KNOWN_MODELS = ['warrior', 'mage', 'archer', 'healer', 'knight', 'assassin']
 
+/**
+ * Клип анимации по смыслу, а не по точному имени.
+ *
+ * Имена клипов у разных авторов моделей разные («Walk», «walk_cycle», «Run»),
+ * поэтому искать одну строку бессмысленно — берём первое совпадение по списку
+ * синонимов, а если модель статична, возвращаем undefined и вызывающий код
+ * просто ничего не проигрывает.
+ */
+const CLIP_SYNONYMS: Record<string, string[]> = {
+  idle: ['idle', 'stand', 'breath'],
+  walk: ['walk', 'run', 'move'],
+  attack: ['attack', 'hit', 'strike', 'slash'],
+  die: ['die', 'death', 'dead'],
+}
+
+export function findClip(names: string[], kind: keyof typeof CLIP_SYNONYMS): string | undefined {
+  const wanted = CLIP_SYNONYMS[kind]
+  return names.find((n) => wanted.some((w) => n.toLowerCase().includes(w)))
+}
+
 const HEX_SIZE = 0.62
 
 /**
