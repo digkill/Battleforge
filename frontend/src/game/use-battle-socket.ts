@@ -5,6 +5,8 @@ export type BattleStats = { hp: number; atk: number; def: number; spd: number }
 
 export type BattleFighter = {
   instanceId: string
+  /** Тип юнита из каталога — по нему выбирается 3D-модель (name локализован). */
+  defId: string
   name: string
   side: 0 | 1
   stats: BattleStats
@@ -27,6 +29,8 @@ export type BattleState = {
   units: BattleFighter[]
   log: BattleLogEntry[]
   yourTurnUnitId: string | null
+  /** Чей ход у соперника — нужен арене, чтобы подсветить активного юнита и на той стороне. */
+  opponentUnitId: string | null
   validTargets: string[]
   winner: string | null
   endReason: string | null
@@ -40,6 +44,7 @@ const initialState: BattleState = {
   units: [],
   log: [],
   yourTurnUnitId: null,
+  opponentUnitId: null,
   validTargets: [],
   winner: null,
   endReason: null,
@@ -83,10 +88,20 @@ export function useBattleSocket(playerId: string) {
             }))
             break
           case 'your_turn':
-            setState((s) => ({ ...s, yourTurnUnitId: msg.unitId, validTargets: msg.validTargets }))
+            setState((s) => ({
+              ...s,
+              yourTurnUnitId: msg.unitId,
+              opponentUnitId: null,
+              validTargets: msg.validTargets,
+            }))
             break
           case 'opponent_turn':
-            setState((s) => ({ ...s, yourTurnUnitId: null, validTargets: [] }))
+            setState((s) => ({
+              ...s,
+              yourTurnUnitId: null,
+              opponentUnitId: msg.unitId,
+              validTargets: [],
+            }))
             break
           case 'battle_update':
             setState((s) => ({
@@ -102,6 +117,7 @@ export function useBattleSocket(playerId: string) {
               winner: msg.winner,
               endReason: msg.reason ?? null,
               yourTurnUnitId: null,
+              opponentUnitId: null,
               validTargets: [],
             }))
             ws.close()

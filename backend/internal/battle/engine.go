@@ -21,8 +21,13 @@ const (
 )
 
 // Fighter — юнит внутри конкретного боя: снимок статов + текущее HP.
+//
+// DefID нужен клиенту, чтобы выбрать 3D-модель: Name локализован («Воин»,
+// «Маг»), и опираться на него при выборе ассета — значит сломать арену при
+// первом же переводе интерфейса.
 type Fighter struct {
 	InstanceID string      `json:"instanceId"`
+	DefID      string      `json:"defId"`
 	Name       string      `json:"name"`
 	Side       Side        `json:"side"`
 	Stats      units.Stats `json:"stats"`
@@ -40,6 +45,7 @@ func NewFighter(instance units.Instance, side Side) (Fighter, error) {
 	stats := def.StatsAtLevel(instance.Level)
 	return Fighter{
 		InstanceID: instance.InstanceID,
+		DefID:      def.ID,
 		Name:       def.Name,
 		Side:       side,
 		Stats:      stats,

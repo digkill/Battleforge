@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import type { PlayerState } from './api'
 import { CATALOG } from './catalog'
+
 import { useBattleSocket, type BattleFighter } from './use-battle-socket'
+
+// three.js + drei весят больше всего остального приложения вместе взятого, а
+// нужны только в бою. Отдельным чанком вкладка «Коллекция» за них не платит.
+const BattleScene = lazy(() => import('./Scene').then((m) => ({ default: m.BattleScene })))
 
 const SQUAD_SIZE = 3
 
@@ -82,6 +87,16 @@ export function BattleView({ playerId, player }: { playerId: string; player: Pla
 
   return (
     <div className="flex flex-col gap-4">
+      <Suspense
+        fallback={<div className="h-64 w-full rounded-lg border bg-[#120e18] sm:h-80" />}
+      >
+        <BattleScene
+          mine={mine}
+          theirs={theirs}
+          activeUnitId={state.yourTurnUnitId ?? state.opponentUnitId}
+        />
+      </Suspense>
+
       <div className="grid gap-4 md:grid-cols-2">
         <Squad title="Ваш отряд" units={mine} yourTurnUnitId={state.yourTurnUnitId} />
         <Squad title="Отряд соперника" units={theirs} yourTurnUnitId={null} />
