@@ -5,7 +5,8 @@
 // целиком выводится из seed, поэтому его не нужно ни хранить, ни синхронизировать —
 // достаточно запомнить seed и позицию героя.
 
-export type WorldTerrain = 'grass' | 'forest' | 'mountain' | 'water' | 'road'
+/** `void` — клетка вне карты: она не рисуется и непроходима. */
+export type WorldTerrain = 'grass' | 'forest' | 'mountain' | 'water' | 'road' | 'void'
 
 export type WorldHex = { col: number; row: number }
 
@@ -31,10 +32,22 @@ export type World = {
 /** Очков передвижения у героя на один день. */
 export const MOVES_PER_DAY = 26
 
-export const WORLD_WIDTH = 14
-export const WORLD_HEIGHT = 11
+/**
+ * Карта — большой шестиугольник, собранный из шестиугольников.
+ *
+ * Хранится она по-прежнему прямоугольником: так проще и рисовать, и считать
+ * соседей. Клетки за пределами шестиугольника помечаются `void` — их не видно
+ * и в них не войти. При радиусе R в шестиугольник попадает 3R²+3R+1 клетка:
+ * при R=10 это 331 против прежних 154, то есть карта стала вдвое больше.
+ */
+export const WORLD_RADIUS = 10
+export const WORLD_WIDTH = WORLD_RADIUS * 2 + 1
+export const WORLD_HEIGHT = WORLD_RADIUS * 2 + 1
 
-const IMPASSABLE: WorldTerrain[] = ['mountain', 'water']
+/** Центральная клетка — от неё отмеряется форма шестиугольника. */
+export const WORLD_CENTER: WorldHex = { col: WORLD_RADIUS, row: WORLD_RADIUS }
+
+const IMPASSABLE: WorldTerrain[] = ['mountain', 'water', 'void']
 
 export function isPassable(t: WorldTerrain): boolean {
   return !IMPASSABLE.includes(t)
@@ -211,13 +224,23 @@ export function findPath(
   return path
 }
 
-/** Собирает мир целиком из seed: ландшафт, дорогу, логова и стартовую клетку героя. */
+/** Клетка внутри большого шестиугольника? */
+export function inWorld(h: WorldHex): boolean {
+  return hexDistance(h, WORLD_CENTER) <= WORLD_RADIUS
+}
+
+/** Собирает мир целиком из seed: форму, ландшафт, дорогу, замок и логова. */
 export function generateWorld(seed: number): World {
   const rnd = mulberry32(seed)
   const width = WORLD_WIDTH
   const height = WORLD_HEIGHT
-  const rows: WorldTerrain[][] = Array.from({ length: height }, () =>
-    Array.from({ length: width }, () => 'grass' as WorldTerrain),
+
+  // Прямоугольник заполняется целиком, но всё за границей шестиугольника
+  // сразу помечается пустотой — дальше эти клетки просто не участвуют.
+  const rows: WorldTerrain[][] = Array.from({ length: height }, (_, row) =>
+    Array.from({ length: width }, (_, col) =>
+      inWorld({ col, row }) ? ('grass' as WorldTerrain) : ('void' as WorldTerrain),
+    ),
   )
 
   const blob = (t: WorldTerrain, count: number, size: number) => {
@@ -237,36 +260,43 @@ export function generateWorld(seed: number): World {
     }
   }
 
-  blob('forest', 5, 12)
-  blob('mountain', 3, 8)
-  blob('water', 3, 9)
+  // Пятен вдвое больше прежнего: площадь выросла, и на старом количестве
+  // карта выглядела бы пустой равниной.
+  blob('forest', 10, 14)
+  blob('mountain', 6, 9)
+  blob('water', 6, 10)
 
-  // Дорога поперёк карты: даёт герою быстрый маршрут и читаемый ориентир,
-  // иначе поле выглядит однородным пятном.
-  let roadRow = Math.floor(height / 2)
+  // Дорога через всю карту по центральному ряду — он самый длинный и проходит
+  // через середину шестиугольника, давая герою читаемый маршрут.
+  let roadRow = WORLD_RADIUS
   for (let col = 0; col < width; col++) {
-    rows[roadRow][col] = 'road'
+    const put = (r: number) => {
+      if (r >= 0 && r < height && rows[r][col] !== 'void') rows[r][col] = 'road'
+    }
+    put(roadRow)
     if (rnd() < 0.35) {
       roadRow = Math.max(1, Math.min(height - 2, roadRow + (rnd() < 0.5 ? -1 : 1)))
-      rows[roadRow][col] = 'road'
+      put(roadRow)
     }
   }
 
-  // Замок у левого края, герой — на соседней клетке. На одной клетке они
-  // перекрывались: башня целиком скрывала фигурку героя.
-  const castle: WorldHex = { col: 0, row: Math.floor(height / 2) }
-  const hero: WorldHex = { col: 1, row: castle.row }
+  // Замок ставим на левый край шестиугольника, героя — на соседнюю клетку:
+  // на одной клетке башня целиком скрывала фигурку.
+  let castleCol = 0
+  while (castleCol < width && rows[WORLD_RADIUS][castleCol] === 'void') castleCol++
+  const castle: WorldHex = { col: castleCol, row: WORLD_RADIUS }
+  const hero: WorldHex = { col: Math.min(castleCol + 1, width - 1), row: WORLD_RADIUS }
   rows[castle.row][castle.col] = 'road'
   rows[hero.row][hero.col] = 'road'
 
-  // Логова расставляются подальше от героя, чтобы первый шаг не оказался боем.
+  // Логов тоже вдвое больше — иначе на большой карте до них слишком далеко идти.
   const lairs: Lair[] = []
   let guard = 0
-  while (lairs.length < 4 && guard < 500) {
+  while (lairs.length < 8 && guard < 2000) {
     guard++
     const at = { col: Math.floor(rnd() * width), row: Math.floor(rnd() * height) }
     if (!isPassable(rows[at.row][at.col])) continue
-    if (hexDistance(at, hero) < 4) continue
+    if (hexDistance(at, hero) < 5) continue
     if (lairs.some((l) => hexKey(l.at) === hexKey(at))) continue
     lairs.push({
       id: `lair-${lairs.length + 1}`,

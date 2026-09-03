@@ -88,7 +88,7 @@ export function WorldView({
   const [tavernOpen, setTavernOpen] = useState(false)
   const [offers, setOffers] = useState<TavernOffer[]>([])
   const [hiring, setHiring] = useState<string | null>(null)
-  const { available: adAvailable, showing: adShowing, show: showAd } = useRewardedAd()
+  const { isStub: adIsStub, showing: adShowing, stubLeft, show: showAd } = useRewardedAd()
   // Идентификатор текущего перехода: если игрок кликнул новую цель, старый
   // маршрут обязан прекратиться, иначе герой пойдёт по двум путям сразу.
   const walkId = useRef(0)
@@ -278,12 +278,16 @@ export function WorldView({
                 disabled={adShowing}
                 onClick={() => void watchAdForDay()}
                 title={
-                  adAvailable
-                    ? 'Посмотреть ролик и начать день сразу'
-                    : 'Реклама доступна только внутри Pikabu Games'
+                  adIsStub
+                    ? 'Вне Pikabu Games крутится наша заглушка вместо настоящего ролика'
+                    : 'Посмотреть ролик и начать день сразу'
                 }
               >
-                {adShowing ? 'Реклама…' : 'Пропустить за рекламу'}
+                {adShowing
+                  ? stubLeft > 0
+                    ? `Реклама… ${stubLeft}`
+                    : 'Реклама…'
+                  : 'Пропустить за рекламу'}
               </Button>
             </>
           ) : (

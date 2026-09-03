@@ -30,6 +30,9 @@ const TERRAIN_STYLE: Record<WorldTerrain, { color: string; height: number }> = {
   forest: { color: '#22401d', height: 0.36 },
   mountain: { color: '#6b6157', height: 0.8 },
   water: { color: '#1d3d5c', height: 0.05 },
+  // Пустота за краем шестиугольника не рисуется вовсе, но стиль нужен, чтобы
+  // тип оставался полным и новая местность не забылась.
+  void: { color: '#000000', height: 0 },
 }
 
 function Tile({
@@ -216,12 +219,15 @@ export function WorldScene({
   const tiles: React.ReactElement[] = []
   for (let row = 0; row < world.height; row++) {
     for (let col = 0; col < world.width; col++) {
+      const terrain = world.rows[row][col]
+      // Клетки за границей карты просто не создаём: они не видны и не кликаются.
+      if (terrain === 'void') continue
       const hex = { col, row }
       tiles.push(
         <Tile
           key={hexKey(hex)}
           hex={hex}
-          terrain={world.rows[row][col]}
+          terrain={terrain}
           highlighted={reachable.has(hexKey(hex))}
           onPick={onPickHex}
         />,
