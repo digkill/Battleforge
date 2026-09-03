@@ -1,12 +1,21 @@
-import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
+import { Environment, OrbitControls, useAnimations, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Suspense, useMemo, useRef } from 'react'
-import { Box3, Group, Vector3, type AnimationClip, type Object3D } from 'three'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Box3,
+  Group,
+  LoopOnce,
+  LoopRepeat,
+  Vector3,
+  type AnimationClip,
+  type Object3D,
+} from 'three'
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
 import type {
   AttackOption,
   BattleField,
   BattleFighter,
+  BattleLogEntry,
   Hex,
   ReachableHex,
   Terrain,
@@ -48,9 +57,89 @@ const CLIP_SYNONYMS: Record<string, string[]> = {
   die: ['die', 'death', 'dead'],
 }
 
-export function findClip(names: string[], kind: keyof typeof CLIP_SYNONYMS): string | undefined {
+export type AnimKind = keyof typeof CLIP_SYNONYMS
+
+export function findClip(names: string[], kind: AnimKind): string | undefined {
   const wanted = CLIP_SYNONYMS[kind]
   return names.find((n) => wanted.some((w) => n.toLowerCase().includes(w)))
+}
+
+/** Все клипы одного смысла: у оборотня, например, четыре разные атаки. */
+function clipsOfKind(names: string[], kind: AnimKind): string[] {
+  const wanted = CLIP_SYNONYMS[kind]
+  return names.filter((n) => wanted.some((w) => n.toLowerCase().includes(w)))
+}
+
+/**
+ * Проигрыватель анимаций модели, привязанный к игровым событиям.
+ *
+ * Клипы у моделей разные и неполные: у оборотня есть Walk, Die и четыре атаки,
+ * но нет idle, а у юнитов Proto Series нет вообще ничего. Поэтому здесь не
+ * жёсткие имена, а смысловые состояния, и недостающие подменяются: покой
+ * изображается замедленной ходьбой, а модель без клипов просто молчит.
+ */
+export function useModelAnimator(
+  group: React.RefObject<Group | null>,
+  animations: AnimationClip[],
+  scene: Object3D,
+) {
+  const clips = useMemo(() => stripRootMotion(animations, scene), [animations, scene])
+  const { actions, names, mixer } = useAnimations(clips, group)
+  const current = useRef<string | null>(null)
+  // Что включить, когда разовый клип доиграет: атака возвращает в покой, а
+  // смерть — никуда, иначе труп бы встал и пошёл.
+  const after = useRef<AnimKind | null>(null)
+
+  const play = useCallback(
+    (kind: AnimKind, opts?: { once?: boolean; then?: AnimKind | null }) => {
+      let pool = clipsOfKind(names, kind)
+      let timeScale = 1
+      if (pool.length === 0 && kind === 'idle') {
+        pool = clipsOfKind(names, 'walk')
+        timeScale = 0.35
+      }
+      if (pool.length === 0) return false
+
+      // Из нескольких атак берём случайную — иначе зверь бьёт одним и тем же
+      // движением весь бой.
+      const name = pool.length === 1 ? pool[0] : pool[Math.floor(Math.random() * pool.length)]
+      const next = actions[name]
+      if (!next) return false
+      if (current.current === name && !opts?.once) return true
+
+      const prev = current.current ? actions[current.current] : null
+      if (prev && prev !== next) prev.fadeOut(0.2)
+
+      next.reset()
+      next.timeScale = timeScale
+      if (opts?.once) {
+        next.setLoop(LoopOnce, 1)
+        next.clampWhenFinished = true
+        after.current = opts.then ?? null
+      } else {
+        next.setLoop(LoopRepeat, Infinity)
+        next.clampWhenFinished = false
+        after.current = null
+      }
+      next.fadeIn(0.2).play()
+      current.current = name
+      return true
+    },
+    [actions, names],
+  )
+
+  useEffect(() => {
+    if (!mixer) return
+    const onFinished = () => {
+      const next = after.current
+      after.current = null
+      if (next) play(next)
+    }
+    mixer.addEventListener('finished', onFinished)
+    return () => mixer.removeEventListener('finished', onFinished)
+  }, [mixer, play])
+
+  return play
 }
 
 /**
@@ -266,20 +355,51 @@ function UnitModel({
   unit,
   active,
   attackable,
+  lastLog,
+  logSeq,
   onPick,
 }: {
   unit: BattleFighter
   active: boolean
   attackable: boolean
+  /** Последнее событие боя — по нему юнит понимает, что пора бить. */
+  lastLog: BattleLogEntry | null
+  /** Номер события: без него две атаки подряд неотличимы друг от друга. */
+  logSeq: number
   onPick: (targetId: string) => void
 }) {
   const group = useRef<Group>(null)
-  const { scene } = useGLTF(MODEL_PATH(unit.defId))
+  const { scene, animations } = useGLTF(MODEL_PATH(unit.defId))
   // Копия обязательна: useGLTF отдаёт один и тот же кэшированный граф на все
   // вызовы с этим путём, и без неё два бойца одного типа делили бы трансформ.
   const model = useNormalizedModel(scene, UNIT_HEIGHT)
+  const play = useModelAnimator(group, animations, scene)
 
   const alive = unit.currentHp > 0
+  const [moving, setMoving] = useState(false)
+  const hasDeathClip = useRef(false)
+
+  // Покой при появлении и после того, как юнит остановился.
+  useEffect(() => {
+    if (alive && !moving) play('idle')
+  }, [alive, moving, play])
+
+  useEffect(() => {
+    if (alive) return
+    // Если клипа смерти нет, падение изображается наклоном в useFrame.
+    hasDeathClip.current = play('die', { once: true, then: null })
+  }, [alive, play])
+
+  useEffect(() => {
+    if (moving && alive) play('walk')
+  }, [moving, alive, play])
+
+  useEffect(() => {
+    if (!lastLog || !alive) return
+    // Бьём только когда это событие про нас и это именно удар, а не переход.
+    if (lastLog.attackerId !== unit.instanceId || !lastLog.targetId) return
+    play('attack', { once: true, then: 'idle' })
+  }, [logSeq, lastLog, unit.instanceId, alive, play])
   const [x, z] = hexToWorld(unit.pos)
   // Сторона B развёрнута навстречу — иначе оба отряда смотрели бы в одну сторону.
   const facing = unit.side === 0 ? Math.PI / 2 : -Math.PI / 2
@@ -289,10 +409,18 @@ function UnitModel({
     if (!g) return
     // Плавный переезд на новую клетку: сервер присылает конечную позицию, а
     // рывок между гексами читался бы как телепорт.
-    g.position.x += (x - g.position.x) * Math.min(1, delta * 6)
-    g.position.z += (z - g.position.z) * Math.min(1, delta * 6)
+    const dx = x - g.position.x
+    const dz = z - g.position.z
+    g.position.x += dx * Math.min(1, delta * 6)
+    g.position.z += dz * Math.min(1, delta * 6)
 
-    const targetTilt = alive ? 0 : -Math.PI / 2
+    // Ходьбу включаем по факту смещения, а не по приходу события: сервер
+    // присылает конечную клетку, а модель едет к ней ещё несколько кадров.
+    const isMoving = Math.abs(dx) + Math.abs(dz) > 0.05
+    if (isMoving !== moving) setMoving(isMoving)
+
+    // Модель с клипом смерти падает сама; остальные заваливаем наклоном.
+    const targetTilt = alive || hasDeathClip.current ? 0 : -Math.PI / 2
     g.rotation.x += (targetTilt - g.rotation.x) * Math.min(1, delta * 6)
 
     const bob = active && alive ? Math.sin(state.clock.elapsedTime * 3) * 0.05 : 0
@@ -337,6 +465,7 @@ export function BattleScene({
   activeUnitId,
   reachable,
   attackable,
+  log,
   onMove,
   onAttack,
 }: {
@@ -345,9 +474,12 @@ export function BattleScene({
   activeUnitId: string | null
   reachable: ReachableHex[]
   attackable: AttackOption[]
+  /** Журнал боя целиком: последняя запись запускает анимацию удара. */
+  log: BattleLogEntry[]
   onMove: (h: Hex) => void
   onAttack: (opt: AttackOption) => void
 }) {
+  const lastLog = log.length > 0 ? log[log.length - 1] : null
   const attackableById = useMemo(
     () => new Map(attackable.map((o) => [o.targetId, o])),
     [attackable],
@@ -376,6 +508,8 @@ export function BattleScene({
               unit={unit}
               active={unit.instanceId === activeUnitId}
               attackable={attackableById.has(unit.instanceId)}
+              lastLog={lastLog}
+              logSeq={log.length}
               onPick={(id) => {
                 const opt = attackableById.get(id)
                 if (opt) onAttack(opt)

@@ -71,6 +71,7 @@ export function BattleView({
           activeUnitId={state.yourTurnUnitId ?? state.opponentUnitId}
           reachable={state.reachable}
           attackable={state.attackable}
+          log={state.log}
           onMove={(hex) => act({ moveTo: hex })}
           onAttack={(opt) => act({ targetId: opt.targetId, moveTo: opt.from })}
         />

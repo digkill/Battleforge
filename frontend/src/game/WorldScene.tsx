@@ -1,8 +1,8 @@
-import { Environment, OrbitControls, useAnimations, useGLTF } from '@react-three/drei'
+import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Suspense, useEffect, useMemo, useRef } from 'react'
+import { Suspense, useEffect, useRef } from 'react'
 import type { Group } from 'three'
-import { findClip, MODEL_PATH, stripRootMotion, useNormalizedModel } from './Scene'
+import { MODEL_PATH, useModelAnimator, useNormalizedModel } from './Scene'
 import { hexKey, type Lair, type World, type WorldHex, type WorldTerrain } from './worldmap'
 
 const HEX_SIZE = 0.62
@@ -78,20 +78,13 @@ function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
   const group = useRef<Group>(null)
   const { scene, animations } = useGLTF(HERO_MODEL)
   const model = useNormalizedModel(scene, FIGURE_HEIGHT)
-  const clips = useMemo(() => stripRootMotion(animations, scene), [animations, scene])
-  const { actions, names } = useAnimations(clips, group)
+  const play = useModelAnimator(group, animations, scene)
 
+  // Рыцарь пока статичен — клипов у него нет, и это нормально: проигрыватель
+  // просто ничего не включит, а движение по-прежнему читается подпрыгиванием.
   useEffect(() => {
-    // Рыцарь пока статичен — клипов нет, и это нормально: findClip вернёт
-    // undefined, и мы просто ничего не запускаем.
-    const clip = findClip(names, moving ? 'walk' : 'idle')
-    if (!clip) return
-    const action = actions[clip]
-    action?.reset().fadeIn(0.2).play()
-    return () => {
-      action?.fadeOut(0.2)
-    }
-  }, [actions, names, moving])
+    play(moving ? 'walk' : 'idle')
+  }, [moving, play])
 
   const [x, z] = hexToWorld(at)
 
@@ -152,25 +145,15 @@ function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void })
   const group = useRef<Group>(null)
   const { scene, animations } = useGLTF(CREEP_MODEL)
   const model = useNormalizedModel(scene, FIGURE_HEIGHT)
-  const clips = useMemo(() => stripRootMotion(animations, scene), [animations, scene])
-  const { actions, names } = useAnimations(clips, group)
+  const play = useModelAnimator(group, animations, scene)
 
+  // На карте крип стоит в покое: отдельного idle у оборотня нет, и покой
+  // изображается замедленной ходьбой — зверь переминается на месте.
   useEffect(() => {
-    // У оборотня клипы есть: на карте он топчется в цикле ходьбы.
-    const clip = findClip(names, 'walk')
-    if (!clip) return
-    const action = actions[clip]
-    action?.reset().fadeIn(0.3).play()
-    return () => {
-      action?.fadeOut(0.3)
-    }
-  }, [actions, names])
+    play('idle')
+  }, [play])
 
   const [x, z] = hexToWorld(lair.at)
-
-  useFrame((_, delta) => {
-    if (group.current) group.current.rotation.y += delta * 0.35
-  })
 
   return (
     <group ref={group} position={[x, 0.14, z]}>
