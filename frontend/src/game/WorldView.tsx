@@ -16,6 +16,7 @@ import {
   type WorldHex,
 } from './worldmap'
 import { getTavern, hireUnit, type TavernOffer } from './api'
+import { useRewardedAd } from '@/sdk/use-rewarded-ad'
 
 const WorldScene = lazy(() => import('./WorldScene').then((m) => ({ default: m.WorldScene })))
 
@@ -24,6 +25,16 @@ const HERO_KEY = 'battleforge-world-hero'
 const CLEARED_KEY = 'battleforge-world-cleared'
 const DAY_KEY = 'battleforge-world-day'
 const MOVES_KEY = 'battleforge-world-moves'
+const REST_UNTIL_KEY = 'battleforge-world-rest-until'
+
+/**
+ * Сколько герой отдыхает, когда переходы кончились.
+ *
+ * Момент окончания хранится как абсолютное время, а не как остаток: иначе
+ * ожидание сбрасывалось бы перезагрузкой страницы, и платить за пропуск было
+ * бы незачем.
+ */
+const REST_MS = 90_000
 
 /** Шаг героя по карте — пауза между клетками, чтобы движение было видно. */
 const STEP_MS = 260
@@ -70,9 +81,14 @@ export function WorldView({
     const saved = Number(localStorage.getItem(MOVES_KEY))
     return Number.isFinite(saved) && saved > 0 ? saved : MOVES_PER_DAY
   })
+  const [restUntil, setRestUntil] = useState<number>(
+    () => Number(localStorage.getItem(REST_UNTIL_KEY)) || 0,
+  )
+  const [now, setNow] = useState(() => Date.now())
   const [tavernOpen, setTavernOpen] = useState(false)
   const [offers, setOffers] = useState<TavernOffer[]>([])
   const [hiring, setHiring] = useState<string | null>(null)
+  const { available: adAvailable, showing: adShowing, show: showAd } = useRewardedAd()
   // Идентификатор текущего перехода: если игрок кликнул новую цель, старый
   // маршрут обязан прекратиться, иначе герой пойдёт по двум путям сразу.
   const walkId = useRef(0)
@@ -85,6 +101,14 @@ export function WorldView({
     localStorage.setItem(DAY_KEY, String(day))
     localStorage.setItem(MOVES_KEY, String(movesLeft))
   }, [day, movesLeft])
+
+  // Тикаем только пока идёт отсчёт: постоянный таймер держал бы перерисовку зря.
+  const resting = restUntil > now
+  useEffect(() => {
+    if (!resting) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [resting])
 
   useEffect(() => {
     if (!tavernOpen || offers.length > 0) return
@@ -104,6 +128,26 @@ export function WorldView({
     () => new Set(reachableFrom(world, hero, movesLeft, blocked).keys()),
     [world, hero, blocked, movesLeft],
   )
+
+  /**
+   * Списывает очки перехода и, если они кончились, отправляет героя на привал.
+   *
+   * Привал начинается здесь, а не в эффекте по movesLeft: эффект запускал бы
+   * лишний цикл перерисовки, а событие траты — единственный момент, когда очки
+   * реально могут обнулиться.
+   */
+  const spendMoves = useCallback((cost: number) => {
+    setMovesLeft((left) => {
+      const rest = left - cost
+      if (rest <= 0) {
+        const until = Date.now() + REST_MS
+        localStorage.setItem(REST_UNTIL_KEY, String(until))
+        setRestUntil(until)
+        setNow(Date.now())
+      }
+      return Math.max(0, rest)
+    })
+  }, [])
 
   const walk = useCallback(
     async (path: WorldHex[], onArrive?: () => void) => {
@@ -134,10 +178,10 @@ export function WorldView({
         setNotice('Герой выдохся — очков передвижения не хватит. Начните следующий день.')
         return
       }
-      setMovesLeft((m) => m - cost)
+      spendMoves(cost)
       void walk(path)
     },
-    [world, hero, blocked, walk, movesLeft],
+    [world, hero, blocked, walk, movesLeft, spendMoves],
   )
 
   const attackLair = useCallback(
@@ -156,10 +200,10 @@ export function WorldView({
         setNotice('До логова в этот день не дойти — начните следующий.')
         return
       }
-      setMovesLeft((m) => m - cost)
+      spendMoves(cost)
       void walk(approach, () => onEnterLair(lair))
     },
-    [world, hero, blocked, walk, onEnterLair, movesLeft],
+    [world, hero, blocked, walk, onEnterLair, movesLeft, spendMoves],
   )
 
   const clearLair = useCallback((lairId: string) => {
@@ -177,8 +221,19 @@ export function WorldView({
   const nextDay = useCallback(() => {
     setDay((d) => d + 1)
     setMovesLeft(MOVES_PER_DAY)
+    setRestUntil(0)
+    localStorage.removeItem(REST_UNTIL_KEY)
     setNotice(null)
   }, [])
+
+  const watchAdForDay = useCallback(async () => {
+    const res = await showAd()
+    if (!res.rewarded) {
+      setNotice(res.reason)
+      return
+    }
+    nextDay()
+  }, [showAd, nextDay])
 
   const hire = useCallback(
     async (offer: TavernOffer) => {
@@ -211,9 +266,31 @@ export function WorldView({
           </Badge>
           <Badge variant="outline">Логов осталось: {remaining}</Badge>
           <Badge variant="outline">Отряд: {player.units.length}</Badge>
-          <Button type="button" size="sm" onClick={nextDay}>
-            Следующий день
-          </Button>
+          {resting ? (
+            <>
+              <Badge variant="outline">
+                Привал: {Math.ceil((restUntil - now) / 1000)} с
+              </Badge>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={adShowing}
+                onClick={() => void watchAdForDay()}
+                title={
+                  adAvailable
+                    ? 'Посмотреть ролик и начать день сразу'
+                    : 'Реклама доступна только внутри Pikabu Games'
+                }
+              >
+                {adShowing ? 'Реклама…' : 'Пропустить за рекламу'}
+              </Button>
+            </>
+          ) : (
+            <Button type="button" size="sm" onClick={nextDay}>
+              Следующий день
+            </Button>
+          )}
         </div>
       </div>
 
@@ -280,8 +357,11 @@ export function WorldView({
           </p>
           <p>Горы и вода непроходимы, лес замедляет, по дороге идти быстрее всего.</p>
           <p>
-            Кликните по замку с голубым кольцом — там нанимают войско за золото. Когда переходы
-            кончатся, начните следующий день.
+            Кликните по замку с голубым кольцом — там нанимают войско за золото.
+          </p>
+          <p>
+            Когда переходы кончатся, герой встаёт на привал. Дождитесь конца отсчёта или
+            посмотрите рекламный ролик, чтобы выступить сразу.
           </p>
         </CardContent>
       </Card>

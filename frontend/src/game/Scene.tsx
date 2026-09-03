@@ -187,6 +187,42 @@ export function stripRootMotion(clips: AnimationClip[], scene: Object3D): Animat
 }
 
 /**
+ * Куда модель «смотрит» в собственных координатах, в радианах вокруг оси Y.
+ *
+ * Исходный разворот у моделей из разных источников свой: юниты Proto Series
+ * смотрят в одну сторону, оборотень из 3ds Max — в другую, и один общий поворот
+ * для них не подобрать. Направление вычисляем по скелету: вектор от пятки к
+ * носку — это «вперёд» у любого двуногого рига, и на новых моделях это тоже
+ * сработает без правки кода.
+ *
+ * У моделей без костей возвращаем 0: их разворот задаёт вызывающий код.
+ */
+export function useModelYaw(scene: Object3D): number {
+  return useMemo(() => {
+    scene.updateWorldMatrix(true, true)
+    const feet: Vector3[] = []
+    const toes: Vector3[] = []
+    scene.traverse((o) => {
+      if (!(o as unknown as { isBone?: boolean }).isBone) return
+      const name = o.name.toLowerCase()
+      // Footsteps — узел корневого движения, а не стопа: он бы испортил среднее.
+      if (name.includes('footstep')) return
+      if (name.includes('toe')) toes.push(o.getWorldPosition(new Vector3()))
+      else if (name.includes('foot')) feet.push(o.getWorldPosition(new Vector3()))
+    })
+    if (feet.length === 0 || toes.length === 0) return 0
+
+    const average = (points: Vector3[]) =>
+      points.reduce((acc, p) => acc.add(p), new Vector3()).divideScalar(points.length)
+
+    const forward = average(toes).sub(average(feet))
+    forward.y = 0
+    if (forward.lengthSq() < 1e-8) return 0
+    return Math.atan2(forward.x, forward.z)
+  }, [scene])
+}
+
+/**
  * Копия модели, приведённая к заданной высоте и поставленная на землю.
  *
  * Подбирать scale руками нельзя: модели приходят из разных источников и в
@@ -375,6 +411,7 @@ function UnitModel({
   const model = useNormalizedModel(scene, UNIT_HEIGHT)
   const play = useModelAnimator(group, animations, scene)
 
+  const modelYaw = useModelYaw(scene)
   const alive = unit.currentHp > 0
   const [moving, setMoving] = useState(false)
   const hasDeathClip = useRef(false)
@@ -401,8 +438,10 @@ function UnitModel({
     play('attack', { once: true, then: 'idle' })
   }, [logSeq, lastLog, unit.instanceId, alive, play])
   const [x, z] = hexToWorld(unit.pos)
-  // Сторона B развёрнута навстречу — иначе оба отряда смотрели бы в одну сторону.
-  const facing = unit.side === 0 ? Math.PI / 2 : -Math.PI / 2
+  // Сторона A стоит слева и смотрит вправо (+X), сторона B — навстречу.
+  // Из нужного направления вычитаем собственный разворот модели, иначе каждая
+  // модель смотрела бы туда, куда её развернул автор.
+  const facing = (unit.side === 0 ? Math.PI / 2 : -Math.PI / 2) - modelYaw
 
   useFrame((state, delta) => {
     const g = group.current

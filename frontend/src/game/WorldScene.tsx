@@ -2,7 +2,7 @@ import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Suspense, useEffect, useRef } from 'react'
 import type { Group } from 'three'
-import { MODEL_PATH, useModelAnimator, useNormalizedModel } from './Scene'
+import { MODEL_PATH, useModelAnimator, useModelYaw, useNormalizedModel } from './Scene'
 import { hexKey, type Lair, type World, type WorldHex, type WorldTerrain } from './worldmap'
 
 const HEX_SIZE = 0.62
@@ -79,6 +79,7 @@ function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
   const { scene, animations } = useGLTF(HERO_MODEL)
   const model = useNormalizedModel(scene, FIGURE_HEIGHT)
   const play = useModelAnimator(group, animations, scene)
+  const modelYaw = useModelYaw(scene)
 
   // Рыцарь пока статичен — клипов у него нет, и это нормально: проигрыватель
   // просто ничего не включит, а движение по-прежнему читается подпрыгиванием.
@@ -96,7 +97,7 @@ function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
     g.position.x += dx * Math.min(1, delta * 4)
     g.position.z += dz * Math.min(1, delta * 4)
     if (Math.abs(dx) + Math.abs(dz) > 0.02) {
-      g.rotation.y = Math.atan2(dx, dz)
+      g.rotation.y = Math.atan2(dx, dz) - modelYaw
     }
     // Пока модель без анимации ходьбы — лёгкое подпрыгивание, чтобы движение
     // читалось. С анимированной моделью это станет незаметно на фоне клипа.
@@ -146,6 +147,9 @@ function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void })
   const { scene, animations } = useGLTF(CREEP_MODEL)
   const model = useNormalizedModel(scene, FIGURE_HEIGHT)
   const play = useModelAnimator(group, animations, scene)
+  // Логово развёрнуто к камере: собственный разворот модели компенсируем,
+  // иначе зверь стоит к игроку боком или спиной.
+  const modelYaw = useModelYaw(scene)
 
   // На карте крип стоит в покое: отдельного idle у оборотня нет, и покой
   // изображается замедленной ходьбой — зверь переминается на месте.
@@ -156,7 +160,7 @@ function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void })
   const [x, z] = hexToWorld(lair.at)
 
   return (
-    <group ref={group} position={[x, 0.14, z]}>
+    <group ref={group} position={[x, 0.14, z]} rotation={[0, -modelYaw, 0]}>
       <primitive object={model} />
       {/* Отдельная область клика: луч по скелетному мешу проверяется по
           габаритам в позе привязки, которые у этой модели далеко от неё самой,
