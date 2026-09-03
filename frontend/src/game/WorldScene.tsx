@@ -1,4 +1,4 @@
-import { Environment, OrbitControls, useGLTF } from '@react-three/drei'
+import { OrbitControls, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Suspense, useEffect, useRef } from 'react'
 import type { Group } from 'three'
@@ -6,6 +6,9 @@ import { MODEL_PATH, useModelAnimator, useModelYaw, useNormalizedModel } from '.
 import { hexKey, type Lair, type World, type WorldHex, type WorldTerrain } from './worldmap'
 
 const HEX_SIZE = 0.62
+
+/** Плитка чуть меньше шага сетки — между гексами остаётся зазор. */
+const TILE_RADIUS = HEX_SIZE * 0.93
 
 /**
  * Высота фигурки на карте. Задаётся в мировых единицах, а масштаб под неё
@@ -51,7 +54,7 @@ function Tile({
           onPick(hex)
         }}
       >
-        <cylinderGeometry args={[HEX_SIZE, HEX_SIZE, style.height, 6]} />
+        <cylinderGeometry args={[TILE_RADIUS, TILE_RADIUS, style.height, 6]} />
         <meshStandardMaterial
           color={style.color}
           roughness={terrain === 'water' ? 0.25 : 0.95}
@@ -60,7 +63,9 @@ function Tile({
       </mesh>
       {highlighted && (
         <mesh position={[0, style.height + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <circleGeometry args={[HEX_SIZE * 0.55, 6]} />
+          {/* Поворот на 30°: cylinderGeometry начинает вершины с +Z, а
+              circleGeometry — с +X, иначе подсветка развёрнута к плитке. */}
+          <circleGeometry args={[TILE_RADIUS * 0.66, 6, Math.PI / 6]} />
           <meshBasicMaterial color="#e8c66a" transparent opacity={0.5} />
         </mesh>
       )}
@@ -230,7 +235,10 @@ export function WorldScene({
         <Suspense fallback={null}>
           <ambientLight intensity={0.8} />
           <directionalLight position={[8, 14, 6]} intensity={1.5} castShadow />
-          <Environment preset="sunset" />
+          {/* Свет задаётся вручную, без drei/Environment: тот подтягивает HDR-карту
+              с внешнего CDN, а Pikabu требует, чтобы игра работала при включённом
+              блокировщике. При сбое загрузки падал весь канвас целиком. */}
+          <hemisphereLight args={['#cfe3ff', '#3b2f22', 0.85]} />
           {tiles}
           <Castle at={world.castle} onPick={onPickCastle} />
           {world.lairs

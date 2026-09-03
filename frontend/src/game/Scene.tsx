@@ -1,4 +1,4 @@
-import { Environment, OrbitControls, useAnimations, useGLTF } from '@react-three/drei'
+import { OrbitControls, useAnimations, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -285,6 +285,12 @@ export function useNormalizedModel(scene: Object3D, targetHeight: number): Group
 
 const HEX_SIZE = 0.62
 
+/**
+ * Радиус самой плитки чуть меньше шага сетки — между гексами остаётся зазор,
+ * и поле читается как выложенное плиткой, а не как сплошная заливка.
+ */
+const TILE_RADIUS = HEX_SIZE * 0.93
+
 /** Высота юнита на поле: чуть меньше диаметра гекса, чтобы не загораживать соседей. */
 const UNIT_HEIGHT = 0.95
 
@@ -337,7 +343,7 @@ function Tile({
       >
         {/* cylinderGeometry с шестью сегментами — это и есть гекс. Поворот на
             30° делает вершину направленной вверх, как требует раскладка odd-r. */}
-        <cylinderGeometry args={[HEX_SIZE, HEX_SIZE, style.height, 6]} />
+        <cylinderGeometry args={[TILE_RADIUS, TILE_RADIUS, style.height, 6]} />
         <meshStandardMaterial
           color={style.color}
           roughness={style.rough}
@@ -347,7 +353,10 @@ function Tile({
 
       {reachable && (
         <mesh position={[0, style.height + 0.015, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <circleGeometry args={[HEX_SIZE * 0.62, 6]} />
+          {/* thetaStart сдвигает вершины на 30°: у cylinderGeometry первая
+              вершина идёт по +Z, а у circleGeometry — по +X, и без поправки
+              подсветка оказывалась повёрнутой относительно плитки. */}
+          <circleGeometry args={[TILE_RADIUS * 0.72, 6, Math.PI / 6]} />
           <meshBasicMaterial color="#e8c66a" transparent opacity={0.42} />
         </mesh>
       )}
@@ -537,7 +546,10 @@ export function BattleScene({
         <Suspense fallback={null}>
           <ambientLight intensity={0.75} />
           <directionalLight position={[6, 12, 6]} intensity={1.5} castShadow />
-          <Environment preset="sunset" />
+          {/* Свет задаётся вручную, без drei/Environment: тот подтягивает HDR-карту
+              с внешнего CDN, а Pikabu требует, чтобы игра работала при включённом
+              блокировщике. При сбое загрузки падал весь канвас целиком. */}
+          <hemisphereLight args={['#cfe3ff', '#3b2f22', 0.85]} />
 
           {field && <Field field={field} reachable={reachable} onPick={onMove} />}
 
@@ -598,7 +610,10 @@ export function UnitPreview({ defId }: { defId: string }) {
         <Suspense fallback={null}>
           <ambientLight intensity={0.8} />
           <directionalLight position={[2, 4, 3]} intensity={1.8} />
-          <Environment preset="sunset" />
+          {/* Свет задаётся вручную, без drei/Environment: тот подтягивает HDR-карту
+              с внешнего CDN, а Pikabu требует, чтобы игра работала при включённом
+              блокировщике. При сбое загрузки падал весь канвас целиком. */}
+          <hemisphereLight args={['#cfe3ff', '#3b2f22', 0.85]} />
           <Turntable defId={defId} />
         </Suspense>
       </Canvas>
