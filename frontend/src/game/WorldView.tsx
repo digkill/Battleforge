@@ -10,6 +10,7 @@ import {
   hexKey,
   MOVES_PER_DAY,
   pathCost,
+  reachableFrom,
   type Lair,
   type World,
   type WorldHex,
@@ -97,22 +98,12 @@ export function WorldView({
     [world.lairs],
   )
 
-  // Подсвечиваем клетки, докуда герой дойдёт за один «день» — иначе карта не
-  // подсказывает, что вообще доступно.
-  const reachable = useMemo(() => {
-    const out = new Set<string>()
-    const budget = movesLeft
-    for (let row = 0; row < world.height; row++) {
-      for (let col = 0; col < world.width; col++) {
-        const to = { col, row }
-        if (hexKey(to) === hexKey(hero)) continue
-        const path = findPath(world, hero, to, blocked)
-        if (!path) continue
-        if (pathCost(world, path) <= budget) out.add(hexKey(to))
-      }
-    }
-    return out
-  }, [world, hero, blocked, movesLeft])
+  // Подсвечиваем клетки, докуда герой дойдёт на оставшиеся очки, — иначе карта
+  // не подсказывает, что вообще доступно.
+  const reachable = useMemo(
+    () => new Set(reachableFrom(world, hero, movesLeft, blocked).keys()),
+    [world, hero, blocked, movesLeft],
+  )
 
   const walk = useCallback(
     async (path: WorldHex[], onArrive?: () => void) => {

@@ -2,12 +2,19 @@ import { Environment, OrbitControls, useAnimations, useGLTF } from '@react-three
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Suspense, useEffect, useMemo, useRef } from 'react'
 import type { Group } from 'three'
-import { findClip } from './Scene'
+import { findClip, MODEL_PATH, stripRootMotion, useNormalizedModel } from './Scene'
 import { hexKey, type Lair, type World, type WorldHex, type WorldTerrain } from './worldmap'
 
 const HEX_SIZE = 0.62
-const CREEP_MODEL = '/models/creeps/wolk.glb'
-const HERO_MODEL = '/models/knight/model.gltf'
+
+/**
+ * Высота фигурки на карте. Задаётся в мировых единицах, а масштаб под неё
+ * считает useNormalizedModel: у героя и оборотня исходные размеры отличаются
+ * на порядки, и общий множитель тут не подобрать.
+ */
+const FIGURE_HEIGHT = 1.05
+const CREEP_MODEL = MODEL_PATH('werewolf')
+const HERO_MODEL = MODEL_PATH('knight')
 
 /** Тот же перевод «odd-r», что и на боевом поле, — две системы координат не нужны. */
 function hexToWorld({ col, row }: WorldHex): [number, number] {
@@ -70,8 +77,9 @@ function Tile({
 function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
   const group = useRef<Group>(null)
   const { scene, animations } = useGLTF(HERO_MODEL)
-  const model = useMemo(() => scene.clone(true), [scene])
-  const { actions, names } = useAnimations(animations, group)
+  const model = useNormalizedModel(scene, FIGURE_HEIGHT)
+  const clips = useMemo(() => stripRootMotion(animations, scene), [animations, scene])
+  const { actions, names } = useAnimations(clips, group)
 
   useEffect(() => {
     // Рыцарь пока статичен — клипов нет, и это нормально: findClip вернёт
@@ -104,7 +112,7 @@ function Hero({ at, moving }: { at: WorldHex; moving: boolean }) {
 
   return (
     <group ref={group} position={[x, 0.16, z]}>
-      <primitive object={model} scale={0.55} />
+      <primitive object={model} />
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.3, 0.4, 24]} />
         <meshBasicMaterial color="#e8c66a" transparent opacity={0.85} />
@@ -143,8 +151,9 @@ function Castle({ at, onPick }: { at: WorldHex; onPick: () => void }) {
 function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void }) {
   const group = useRef<Group>(null)
   const { scene, animations } = useGLTF(CREEP_MODEL)
-  const model = useMemo(() => scene.clone(true), [scene])
-  const { actions, names } = useAnimations(animations, group)
+  const model = useNormalizedModel(scene, FIGURE_HEIGHT)
+  const clips = useMemo(() => stripRootMotion(animations, scene), [animations, scene])
+  const { actions, names } = useAnimations(clips, group)
 
   useEffect(() => {
     // У оборотня клипы есть: на карте он топчется в цикле ходьбы.
@@ -164,15 +173,21 @@ function LairMarker({ lair, onPick }: { lair: Lair; onPick: (l: Lair) => void })
   })
 
   return (
-    <group
-      ref={group}
-      position={[x, 0.14, z]}
-      onClick={(e) => {
-        e.stopPropagation()
-        onPick(lair)
-      }}
-    >
-      <primitive object={model} scale={0.42} />
+    <group ref={group} position={[x, 0.14, z]}>
+      <primitive object={model} />
+      {/* Отдельная область клика: луч по скелетному мешу проверяется по
+          габаритам в позе привязки, которые у этой модели далеко от неё самой,
+          поэтому клик по волку промахивался и попадал в клетку под ним. */}
+      <mesh
+        position={[0, FIGURE_HEIGHT / 2, 0]}
+        onClick={(e) => {
+          e.stopPropagation()
+          onPick(lair)
+        }}
+      >
+        <cylinderGeometry args={[0.42, 0.42, FIGURE_HEIGHT, 8]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[0.36, 0.48, 24]} />
         <meshBasicMaterial color="#d24b3a" transparent opacity={0.85} />
@@ -198,10 +213,13 @@ export function WorldScene({
   onPickLair: (l: Lair) => void
   onPickCastle: () => void
 }) {
-  const center = hexToWorld({
-    col: Math.floor(world.width / 2),
-    row: Math.floor(world.height / 2),
-  })
+  // Кадрируем по геометрическому центру поля, а не по центральной клетке:
+  // из-за сдвига нечётных рядов это разные точки, и карта уезжала вбок.
+  const [maxX] = hexToWorld({ col: world.width - 1, row: 1 })
+  const [, maxZ] = hexToWorld({ col: 0, row: world.height - 1 })
+  const center: [number, number] = [maxX / 2, maxZ / 2]
+  // Отдаление считается от размера карты, иначе при её изменении кадр ломается.
+  const span = Math.max(maxX, maxZ)
 
   const tiles: React.ReactElement[] = []
   for (let row = 0; row < world.height; row++) {
@@ -221,7 +239,7 @@ export function WorldScene({
 
   return (
     <div className="h-[24rem] w-full overflow-hidden rounded-lg border border-primary/25 bg-[#0f0c14] sm:h-[32rem]">
-      <Canvas shadows camera={{ position: [center[0], 12, center[1] + 11], fov: 45 }}>
+      <Canvas shadows camera={{ position: [center[0], span * 0.7, center[1] + span * 0.62], fov: 45 }}>
         <Suspense fallback={null}>
           <ambientLight intensity={0.8} />
           <directionalLight position={[8, 14, 6]} intensity={1.5} castShadow />
@@ -240,8 +258,8 @@ export function WorldScene({
           enablePan={false}
           minPolarAngle={Math.PI / 8}
           maxPolarAngle={Math.PI / 2.3}
-          minDistance={7}
-          maxDistance={26}
+          minDistance={span * 0.4}
+          maxDistance={span * 2.2}
         />
       </Canvas>
     </div>

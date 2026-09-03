@@ -29,7 +29,7 @@ export type World = {
 }
 
 /** Очков передвижения у героя на один день. */
-export const MOVES_PER_DAY = 14
+export const MOVES_PER_DAY = 26
 
 export const WORLD_WIDTH = 14
 export const WORLD_HEIGHT = 11
@@ -115,6 +115,48 @@ export function hexKey(h: WorldHex): string {
 /** Суммарная цена маршрута — сколько очков передвижения он съест. */
 export function pathCost(world: World, path: WorldHex[]): number {
   return path.reduce((sum, h) => sum + moveCost(world.rows[h.row][h.col]), 0)
+}
+
+/**
+ * Все клетки, достижимые за budget очков, и цена пути до каждой — одним обходом.
+ *
+ * Раньше достижимость считалась перебором: findPath до каждой из полутора сотен
+ * клеток, то есть полторы сотни полных обходов карты на каждый пересчёт. Здесь
+ * один проход Дейкстры от героя даёт то же самое.
+ */
+export function reachableFrom(
+  world: World,
+  from: WorldHex,
+  budget: number,
+  blocked: Set<string>,
+): Map<string, number> {
+  const dist = new Map<string, number>([[hexKey(from), 0]])
+  const visited = new Set<string>()
+
+  for (;;) {
+    let cur: WorldHex | null = null
+    let best = Infinity
+    for (const [key, d] of dist) {
+      if (!visited.has(key) && d < best) {
+        best = d
+        const [c, r] = key.split(':').map(Number)
+        cur = { col: c, row: r }
+      }
+    }
+    if (!cur) break
+    visited.add(hexKey(cur))
+
+    for (const n of neighbors(cur, world.width, world.height)) {
+      const key = hexKey(n)
+      const cost = moveCost(world.rows[n.row][n.col])
+      if (cost === 0 || blocked.has(key)) continue
+      const nd = best + cost
+      if (nd <= budget && nd < (dist.get(key) ?? Infinity)) dist.set(key, nd)
+    }
+  }
+
+  dist.delete(hexKey(from))
+  return dist
 }
 
 /** Путь героя до клетки с учётом местности, или null, если пути нет. */
@@ -210,10 +252,12 @@ export function generateWorld(seed: number): World {
     }
   }
 
-  const hero: WorldHex = { col: 0, row: Math.floor(height / 2) }
+  // Замок у левого края, герой — на соседней клетке. На одной клетке они
+  // перекрывались: башня целиком скрывала фигурку героя.
+  const castle: WorldHex = { col: 0, row: Math.floor(height / 2) }
+  const hero: WorldHex = { col: 1, row: castle.row }
+  rows[castle.row][castle.col] = 'road'
   rows[hero.row][hero.col] = 'road'
-  // Замок стоит на старте героя: возвращаться нанимать войско недалеко.
-  const castle: WorldHex = { ...hero }
 
   // Логова расставляются подальше от героя, чтобы первый шаг не оказался боем.
   const lairs: Lair[] = []
